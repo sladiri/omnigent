@@ -392,6 +392,7 @@ class CodexNativeExecutor(Executor):
             )
             await client.connect()
             try:
+                input_items = await _expand_explicit_skill_command(client, input_items)
                 await _inject_codex_turn(
                     client,
                     bridge_dir=self._bridge_dir,
@@ -626,6 +627,7 @@ class CodexNativeExecutor(Executor):
                             # question over and leave the main thread untouched.
                             side_chat.request_side_chat(self._bridge_dir, side_question)
                         else:
+                            input_items = await _expand_explicit_skill_command(client, input_items)
                             if goal_objective is not None:
                                 await client.request(
                                     "thread/goal/set",
@@ -850,6 +852,54 @@ def _apply_resize_notice_to_latest_image(
         path = item.get("path")
         if isinstance(path, str):
             item["path"] = str(codex_resize_metadata_path(Path(path), source_metadata))
+
+
+async def _expand_explicit_skill_command(
+    client: CodexAppServerClient,
+    items: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Resolve a leading ``/skill`` through Codex's skill registry."""
+    if not items:
+        return items
+    first = items[0]
+    text = first.get("text") if first.get("type") == "text" else None
+    if not isinstance(text, str):
+        return items
+    parts = text.split(maxsplit=1)
+    command = parts[0]
+    if not command.startswith("/") or len(command) == 1:
+        return items
+    name = command[1:]
+    try:
+        response = await client.request("skills/list", {"cwds": []})
+    except Exception:  # noqa: BLE001 - unsupported lookup leaves input literal.
+        _logger.warning("Codex native skills/list failed", exc_info=True)
+        return items
+    result = _json_object(response.get("result"))
+    data = result.get("data") if result is not None else None
+    if not isinstance(data, list):
+        return items
+    for entry in data:
+        entry_obj = _json_object(entry)
+        skills = entry_obj.get("skills") if entry_obj is not None else None
+        if not isinstance(skills, list):
+            continue
+        for skill in skills:
+            skill_obj = _json_object(skill)
+            if (
+                skill_obj is None
+                or skill_obj.get("name") != name
+                or skill_obj.get("enabled") is not True
+            ):
+                continue
+            path = skill_obj.get("path")
+            if not isinstance(path, str) or not path:
+                return items
+            expanded: list[dict[str, object]] = [{"type": "skill", "name": name, "path": path}]
+            if len(parts) == 2:
+                expanded.append({"type": "text", "text": parts[1]})
+            return [*expanded, *items[1:]]
+    return items
 
 
 def _file_block_to_input_item(
