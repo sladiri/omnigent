@@ -5669,6 +5669,66 @@ describe("Composer config gear", () => {
     expect(calls).toEqual(["model", "effort"]);
   });
 
+  it.each([true, false])(
+    "configures Codex before wake with no reported model (catalog ready: %s)",
+    async (catalogReady) => {
+      const options = [
+        {
+          id: "codex-resume-model",
+          displayName: "Resume model",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+        },
+      ];
+      const calls: string[] = [];
+      const setModel = vi.fn().mockImplementation(async (model) => {
+        useChatStore.setState({ sessionModelOverride: model });
+        calls.push("model");
+      });
+      const setEffort = vi.fn().mockImplementation(async () => {
+        calls.push("effort");
+      });
+      useChatStore.setState({
+        setModel,
+        setEffort,
+        llmModel: null,
+        sessionModelOverride: null,
+        selectedEffort: "high",
+      });
+      const props = composerProps({
+        showModels: true,
+        showEffort: false,
+        effortLevels: [],
+        modelPickerKind: "codex",
+        unreachable: false,
+        codexModelOptions: options,
+      });
+      const { rerender } = renderWithTooltips(
+        <Composer {...props} codexModelOptions={catalogReady ? options : []} />,
+      );
+      openSessionConfig();
+      fireEvent.click(screen.getByTestId("composer-agent-edit"));
+      await screen.findByTestId("composer-agent-efforts");
+      expect(screen.queryByTestId("composer-agent-effort-low")).toBeNull();
+      expect(screen.getByText("Select a model to choose effort")).toBeTruthy();
+      if (!catalogReady) {
+        rerender(
+          <TooltipProvider>
+            <Composer {...props} />
+          </TooltipProvider>,
+        );
+        expect(screen.queryByTestId("composer-agent-effort-low")).toBeNull();
+      }
+      fireEvent.click(screen.getByTestId("composer-agent-model-codex-resume-model"));
+      await screen.findByTestId("composer-agent-effort-low");
+      expect(document.querySelector('[data-effort-level="ultra"]')).toBeNull();
+      fireEvent.click(screen.getByTestId("composer-agent-effort-low"));
+      await waitFor(() => expect(setEffort).toHaveBeenCalledWith("low"));
+      expect(setModel).toHaveBeenCalledWith("codex-resume-model", { expectConfirmation: true });
+      expect(calls).toEqual(["model", "effort"]);
+    },
+  );
+
   it("leaves no lingering error indicator when a session config update fails", async () => {
     const setModel = vi.fn().mockRejectedValue(new Error("Host stopped responding"));
     const options = [

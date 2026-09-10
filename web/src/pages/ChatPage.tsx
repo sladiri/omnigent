@@ -4695,6 +4695,7 @@ function SessionHarnessPicker({
       : compactModelTriggerLabel(
           modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
         );
+  const showEffortControl = showEffort || modelPickerKind === "codex";
   const availableEfforts =
     modelPickerKind === "codex"
       ? codexEffortLevelsForModel(codexModelOptions, pickerSelectedModel)
@@ -4839,10 +4840,17 @@ function SessionHarnessPicker({
             : undefined
         }
         efforts={
-          showEffort && availableEfforts.length > 0
+          showEffortControl
             ? {
                 testId: "composer-agent-efforts",
                 header: modelPickerKind === "pi" ? "Thinking level" : "Effort",
+                leading: availableEfforts.length === 0 ? (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">
+                    {pickerSelectedModel
+                      ? "Effort options unavailable for this model"
+                      : "Select a model to choose effort"}
+                  </p>
+                ) : undefined,
                 choices: availableEfforts.map((effort) => ({
                   key: effort,
                   label: formatStatusEffortLabel(effort) ?? effort,
