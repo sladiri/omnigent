@@ -3987,6 +3987,7 @@ describe("NewChatLandingScreen", () => {
     renderLanding();
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
     clickAgentConfig("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-5"));
 
     expect(screen.getByTestId("new-chat-landing-agent-efforts")).toHaveTextContent("Effort");
     expect(screen.getByTestId("new-chat-landing-agent-effort-low")).toBeTruthy();
@@ -4339,7 +4340,7 @@ describe("NewChatLandingScreen", () => {
     expect(body.reasoning_effort).toBeUndefined();
   });
 
-  it("hides adjacent Codex effort options when the model has no effort metadata", () => {
+  it("disables adjacent Codex effort options when the model has no effort metadata", () => {
     useHostModelOptionsMock.mockImplementation(
       (_hostId, harness) =>
         (harness === "codex-native"
@@ -4356,7 +4357,9 @@ describe("NewChatLandingScreen", () => {
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
     fireEvent.click(screen.getByTestId("new-chat-landing-agent-config-a2"));
     expect(screen.getByTestId("new-chat-landing-agent-models")).toBeTruthy();
-    expect(screen.queryByTestId("new-chat-landing-agent-efforts")).toBeNull();
+    expect(screen.getByTestId("new-chat-landing-agent-effort-default")).toHaveAttribute(
+      "data-disabled",
+    );
   });
 
   it("sizes model names to content and compacts them only when space runs out", () => {
@@ -4807,7 +4810,7 @@ describe("NewChatLandingScreen", () => {
     await waitFor(() => expect(picker).toHaveFocus());
   });
 
-  it("names the default Codex model once and preserves default-following selection", async () => {
+  it("names the default Codex model once and pins it when explicitly selected", async () => {
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ id: "conv_new" }),
@@ -4830,7 +4833,7 @@ describe("NewChatLandingScreen", () => {
     closeMenu();
     const { body } = await submitAndReadBody();
     expect(body.agent_id).toBe("a2");
-    expect(body.model_override).toBeUndefined();
+    expect(body.model_override).toBe("databricks-gpt-5-5");
   });
 
   it("names Pi model and thinking-level details in the harness trigger", () => {
@@ -5401,8 +5404,11 @@ describe("NewChatLandingScreen", () => {
     } as unknown as Response);
     renderLanding();
     openAgentModels("a2");
-    // With no model pinned, the row lists the catalog default's (GPT-5.5)
-    // ladder — raw Codex ids, never another model's rungs.
+    expect(screen.getByTestId("new-chat-landing-agent-effort-default")).toHaveAttribute(
+      "data-disabled",
+    );
+    expect(screen.getByText("Select a model to choose effort")).toBeTruthy();
+    pickPrimaryOption("model", "GPT-5.5");
     expect(screen.getByRole("menuitemcheckbox", { name: "Low" })).toBeTruthy();
     expect(screen.getByRole("menuitemcheckbox", { name: "Medium" })).toBeTruthy();
     expect(screen.queryByRole("menuitemcheckbox", { name: "xHigh" })).toBeNull();
@@ -5454,6 +5460,7 @@ describe("NewChatLandingScreen", () => {
   it("remembers the Codex effort per harness without leaking it onto Claude", () => {
     renderLanding();
     openAgentModels("a2");
+    pickPrimaryOption("model", "GPT-5.5");
     pickPrimaryOption("effort", "High");
     closePrimaryPicker();
 
@@ -5466,6 +5473,27 @@ describe("NewChatLandingScreen", () => {
     // Codex reopens on the remembered pick, still valid for its ladder.
     openAgentModels("a2");
     expect(selectedPickerEffort().textContent).toContain("High");
+  });
+
+  it("ignores a remembered Codex effort without a resolved model", async () => {
+    localStorage.setItem(
+      HARNESS_OPTIONS_KEY,
+      JSON.stringify({ "codex-native": { model: "", effort: "high" } }),
+    );
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+    renderLanding();
+    openAgentModels("a2");
+    expect(selectedPickerEffort().textContent).toContain("Default");
+    expect(screen.getByTestId("new-chat-landing-agent-effort-default")).toHaveAttribute(
+      "data-disabled",
+    );
+    closePrimaryPicker();
+    const { body } = await submitAndReadBody();
+    expect(body.model_override).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
   });
 
   it("sends the selected Codex launch model without changing Claude's remembered model", async () => {
