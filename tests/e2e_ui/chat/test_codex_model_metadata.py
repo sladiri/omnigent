@@ -361,6 +361,8 @@ def _patch_precatalog_codex_session_on_host(
         payload["host_id"] = _PRE_CATALOG_HOST_ID
         payload["runner_online"] = runner_online
         payload["host_online"] = True
+        payload.update(overrides)
+        latest_payload = payload
         route.fulfill(
             status=200,
             headers={**response.headers, "content-type": "application/json"},
@@ -408,7 +410,7 @@ def test_sleeping_codex_session_can_select_model_and_effort_without_a_model_repo
     """A sleeping session with missing metadata can save settings before wake."""
     base_url, session_id = seeded_session
     patches = _patch_precatalog_codex_session_on_host(
-        page, session_id, llm_model=None, runner_online=False
+        page, session_id, reported_model=None, runner_online=False
     )
     page.goto(f"{base_url}/c/{session_id}")
     gear = page.get_by_test_id("composer-config-gear")

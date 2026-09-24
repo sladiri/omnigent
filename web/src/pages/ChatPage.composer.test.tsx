@@ -5693,7 +5693,7 @@ describe("Composer config gear", () => {
         setEffort,
         llmModel: null,
         sessionModelOverride: null,
-        selectedEffort: "high",
+        sessionReasoningEffort: "high",
       });
       const props = composerProps({
         showModels: true,
@@ -5701,6 +5701,7 @@ describe("Composer config gear", () => {
         effortLevels: [],
         modelPickerKind: "codex",
         unreachable: false,
+        runnerOnline: false,
         codexModelOptions: options,
       });
       const { rerender } = renderWithTooltips(
@@ -5724,7 +5725,7 @@ describe("Composer config gear", () => {
       expect(document.querySelector('[data-effort-level="ultra"]')).toBeNull();
       fireEvent.click(screen.getByTestId("composer-agent-effort-low"));
       await waitFor(() => expect(setEffort).toHaveBeenCalledWith("low"));
-      expect(setModel).toHaveBeenCalledWith("codex-resume-model", { expectConfirmation: true });
+      expect(setModel).toHaveBeenCalledWith("codex-resume-model", { expectConfirmation: false });
       expect(calls).toEqual(["model", "effort"]);
     },
   );

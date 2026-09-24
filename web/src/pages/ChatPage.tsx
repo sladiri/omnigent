@@ -3965,6 +3965,7 @@ function ComposerImpl(
             <>
               <div className="flex min-w-0 items-center rounded-lg">
                 <SessionHarnessPicker
+                  runnerOnline={runnerOnline}
                   busy={configBusy}
                   busyRef={configBusyRef}
                   setBusy={setConfigBusy}
@@ -4606,6 +4607,7 @@ function SessionHarnessPicker({
   harnessLabel,
   showModels,
   showEffort,
+  runnerOnline,
   effortLevels,
   modelPickerKind,
   supportsModelReset,
@@ -4625,6 +4627,7 @@ function SessionHarnessPicker({
   harnessLabel: string | null;
   showModels: boolean;
   showEffort: boolean;
+  runnerOnline?: boolean;
   effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
   supportsModelReset: boolean;
@@ -4730,7 +4733,8 @@ function SessionHarnessPicker({
       const store = useChatStore.getState();
       const sourceSessionId = store.conversationId;
       await store.setModel(modelId, {
-        expectConfirmation: modelPickerKind === "claude" || modelPickerKind === "codex",
+        expectConfirmation:
+          modelPickerKind === "claude" || (modelPickerKind === "codex" && runnerOnline !== false),
       });
       if (useChatStore.getState().conversationId !== sourceSessionId) return;
       if (
@@ -4844,13 +4848,14 @@ function SessionHarnessPicker({
             ? {
                 testId: "composer-agent-efforts",
                 header: modelPickerKind === "pi" ? "Thinking level" : "Effort",
-                leading: availableEfforts.length === 0 ? (
-                  <p className="px-2 py-1 text-xs text-muted-foreground">
-                    {pickerSelectedModel
-                      ? "Effort options unavailable for this model"
-                      : "Select a model to choose effort"}
-                  </p>
-                ) : undefined,
+                leading:
+                  availableEfforts.length === 0 ? (
+                    <p className="px-2 py-1 text-xs text-muted-foreground">
+                      {pickerSelectedModel
+                        ? "Effort options unavailable for this model"
+                        : "Select a model to choose effort"}
+                    </p>
+                  ) : undefined,
                 choices: availableEfforts.map((effort) => ({
                   key: effort,
                   label: formatStatusEffortLabel(effort) ?? effort,
