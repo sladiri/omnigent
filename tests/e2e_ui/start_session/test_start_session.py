@@ -2085,7 +2085,11 @@ async def _drive_codex_model(base_url: str, session_id: str) -> None:
                                     "displayName": "GPT Live Default",
                                     "isDefault": True,
                                 },
-                                {"id": "gpt-live-fast", "displayName": "GPT Live Fast"},
+                                {
+                                    "id": "gpt-live-fast",
+                                    "displayName": "GPT Live Fast",
+                                    "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}],
+                                },
                             ]
                         }
                     ),
