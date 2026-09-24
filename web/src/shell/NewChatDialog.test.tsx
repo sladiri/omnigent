@@ -1548,7 +1548,7 @@ function pickSelectOption(triggerTestId: string, label: string): void {
     return;
   }
   openSelect(triggerTestId);
-  fireEvent.click(screen.getByText(label));
+  fireEvent.click(within(screen.getByRole("listbox")).getByText(label));
 }
 
 /** Dismiss any open menu. */

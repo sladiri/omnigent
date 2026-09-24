@@ -6029,3 +6029,53 @@ describe("saved sandbox inference policy", () => {
     },
   );
 });
+
+describe("effort submit buttons", () => {
+  const originalSetEffort = useChatStore.getState().setEffort;
+  beforeEach(() => {
+    useChatStore.setState({ conversationId: "effort-submit", costControlModeOverride: null });
+  });
+  afterEach(() => {
+    cleanup();
+    useChatStore.setState({ setEffort: originalSetEffort });
+  });
+
+  it.each(["low", "medium", "high"])("sets %s before sending exactly once", async (effort) => {
+    let finish!: () => void;
+    const setEffort = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    useChatStore.setState({ setEffort });
+    const onSend = vi.fn();
+    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
+    const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
+    expect(button).toBeDisabled();
+    fireEvent.change(textarea(), { target: { value: "hello" } });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
+  });
+
+  it("keeps the draft when setting effort fails", async () => {
+    useChatStore.setState({ setEffort: vi.fn().mockRejectedValue(new Error("Effort failed")) });
+    const onSend = vi.fn();
+    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
+    fireEvent.change(textarea(), { target: { value: "keep this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send with low effort" }));
+    await screen.findByText("Effort failed");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea()).toHaveValue("keep this");
+  });
+
+  it("only offers supported quick levels", () => {
+    renderWithTooltips(<Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />);
+    expect(screen.queryByRole("button", { name: "Send with low effort" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send with high effort" })).toBeInTheDocument();
+  });
+});

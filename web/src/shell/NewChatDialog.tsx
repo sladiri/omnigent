@@ -59,6 +59,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { iconForAgent } from "@/components/AgentCard";
@@ -5158,7 +5159,7 @@ export function NewChatLandingScreen() {
     }
   }
 
-  async function handleCreate() {
+  async function handleCreate(effortOverride?: string) {
     // Mirror the Send button's disabled condition (canSubmit) so the Enter-key
     // and form-submit paths that call this directly can't create a session with
     // a blank message, host, agent, or workspace.
@@ -5281,8 +5282,8 @@ export function NewChatLandingScreen() {
           selectedNativeHarness === "pi-native" ||
           nativeAgent?.harness === "codex-native" ||
           nativeAgent?.harness === "devin-native") &&
-        pickedEffort
-          ? pickedEffort
+        (effortOverride ?? pickedEffort)
+          ? (effortOverride ?? pickedEffort)
           : null;
       // Resolved default (shown when nothing is pinned): the catalog's default
       // row's provider-facing model id, else its row id.
@@ -6782,6 +6783,19 @@ export function NewChatLandingScreen() {
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
                     />
+                    {!smartRoutingHarnessSelected &&
+                      !(smartRoutingEligible && costControlMode === "on") &&
+                      (supportsPermissionMode || selectedNativeHarness === "codex-native") && (
+                        <EffortSubmitButtons
+                          levels={
+                            selectedNativeHarness === "codex-native"
+                              ? codexEffortLevelsForModel(codexModelOptions, pickedModel || null)
+                              : CLAUDE_NATIVE_EFFORTS.map((effort) => effort.value)
+                          }
+                          disabled={!canSubmit}
+                          onSubmit={(effort) => void handleCreate(effort)}
+                        />
+                      )}
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>

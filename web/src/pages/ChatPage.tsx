@@ -36,6 +36,7 @@ import {
 } from "@/components/KeyboardShortcut";
 import { useNavigate, useParams } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import {
   ChatComposer,
   type ComposerKeyIntent,
@@ -3307,11 +3308,14 @@ function ComposerImpl(
     textareaRef.current = tailTextareaRef.current;
   };
 
+  const effortSubmitPending = useRef(false);
+  const [savingSubmitEffort, setSavingSubmitEffort] = useState(false);
+  const submitRoutingMode = useChatStore((s) => s.costControlModeOverride);
   const submit = ({
     resetNativeInputSession = false,
   }: { resetNativeInputSession?: boolean } = {}) => {
     // The /btw overlay locks the composer — never send while it's open.
-    if (composerLockedByBtw) return;
+    if (composerLockedByBtw || effortSubmitPending.current || isReadOnly) return;
     const trimmed = fullText.trim();
     // Allow send if there's text, attached files, OR "@"-tagged paths.
     if (
@@ -3457,6 +3461,33 @@ function ComposerImpl(
     clearAttachments();
     setMentionedItems([]);
     setMention(null);
+  };
+
+  const submitWithEffort = async (effort: string) => {
+    if (
+      effortSubmitPending.current ||
+      !hasDraft ||
+      disabled ||
+      isReadOnly ||
+      sendDisabledReason !== null ||
+      composerLockedByBtw ||
+      hasPendingElicitation
+    )
+      return;
+    effortSubmitPending.current = true;
+    setSavingSubmitEffort(true);
+    setCommandError(null);
+    try {
+      await useChatStore.getState().setEffort(effort);
+      effortSubmitPending.current = false;
+      if (useChatStore.getState().conversationId === conversationId)
+        submit({ resetNativeInputSession: true });
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Failed to set effort");
+    } finally {
+      effortSubmitPending.current = false;
+      setSavingSubmitEffort(false);
+    }
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -3713,6 +3744,7 @@ function ComposerImpl(
         input={{
           ref: bindTailTextarea,
           value: draft.text,
+          readOnly: savingSubmitEffort,
           onChange: (e) => handleTextChange(null, e),
           onSelect: (e) => slashCompletion.onSelectionChange(e.currentTarget),
           onFocus: (e) => {
@@ -4019,6 +4051,22 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
+              {showEffort &&
+                !showInterruptButton &&
+                !(costRoutingEligible && submitRoutingMode === "on") && (
+                  <EffortSubmitButtons
+                    levels={effortLevels}
+                    disabled={
+                      !hasDraft ||
+                      disabled ||
+                      isReadOnly ||
+                      unreachable ||
+                      hasPendingElicitation ||
+                      savingSubmitEffort
+                    }
+                    onSubmit={(effort) => void submitWithEffort(effort)}
+                  />
+                )}
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -4031,7 +4079,8 @@ function ComposerImpl(
                             disabled ||
                             isReadOnly ||
                             sendDisabledReason !== null ||
-                            hasPendingElicitation
+                            hasPendingElicitation ||
+                            savingSubmitEffort
                       }
                       title={showInterruptButton ? "Interrupt" : (sendDisabledReason ?? undefined)}
                       label={showInterruptButton ? "Interrupt" : "Send"}
