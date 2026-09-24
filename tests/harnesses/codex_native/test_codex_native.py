@@ -6156,6 +6156,160 @@ def test_forwarder_posts_user_message_on_assistant_item_started(tmp_path: Path) 
     assert forwarder_state.has_posted_user_message("turn_123")
 
 
+@pytest.mark.parametrize(
+    "answer, delivery_error",
+    [
+        ("Development", False),
+        ("Use a disposable environment", False),
+        (None, False),
+        ("Development", True),
+    ],
+)
+async def test_forwarder_async_question_card_and_reply(
+    tmp_path: Path, answer: str | None, delivery_error: bool
+) -> None:
+    """Questions remain actionable while later events and turn completion drain."""
+    from omnigent.server.routes._codex_elicitation import parse_codex_elicitation_request
+
+    question_open = asyncio.Event()
+    submit = asyncio.Event()
+    posted: list[dict[str, Any]] = []
+    hooks: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if request.url.path.endswith("codex-elicitation-request"):
+            hooks.append(payload)
+            prompt = parse_codex_elicitation_request(payload).params.model_dump()
+            question = prompt["ask_user_question"]["questions"][0]
+            assert question["question"] == "Which environment?"
+            assert question["options"] == [{"label": "Development"}, {"label": "Production"}]
+            assert question["isOther"] is True
+            question_open.set()
+            await submit.wait()
+            answers = {question["id"]: {"answers": [answer]}} if answer else {}
+            return httpx.Response(200, json={"answers": answers})
+        posted.append(payload)
+        return httpx.Response(202, json={"queued": False})
+
+    codex = _FakeCodexAppServerClient(
+        error=RuntimeError("transport lost") if delivery_error else None
+    )
+    tracker = _elicitation_tracker()
+    event = _agent_message_event("turn_123", "item_question", "")
+    event["params"]["item"]["questions"] = [
+        {"title": "Which environment?", "options": ["Development", "Production"]}
+    ]
+    async with httpx.AsyncClient(
+        base_url="http://127.0.0.1:8000", transport=httpx.MockTransport(handler)
+    ) as client:
+
+        async def handle(event: dict[str, Any]) -> None:
+            await codex_native_forwarder._handle_event(
+                client,
+                session_id="conv_123",
+                bridge_dir=tmp_path,
+                usage_coalescer=_usage_coalescer(client),
+                elicitation_tracker=tracker,
+                codex_client=codex,
+                event=event,
+            )
+
+        try:
+            await handle(event)
+            await asyncio.wait_for(question_open.wait(), timeout=1)
+            await handle(event)  # Duplicate delivery must not create another card.
+            await handle(_agent_message_event("turn_123", "next_item", "Still working"))
+            assert any(
+                p.get("data", {}).get("item_data", {}).get("content")
+                == [{"type": "output_text", "text": "Still working"}]
+                for p in posted
+            )
+            await tracker.resolve_by_terminal_turn_event(
+                client,
+                session_id="conv_123",
+                params={"threadId": "thread_123", "turnId": "turn_123"},
+            )
+            assert not any(p["type"] == "external_elicitation_resolved" for p in posted)
+            assert codex.requests == []
+            submit.set()
+            await tracker.drain()
+        finally:
+            await tracker.close()
+    if delivery_error:
+        assert any(
+            "Could not confirm delivery" in str(p) and "Development" in str(p) for p in posted
+        )
+    assert len(hooks) == 1
+    assert codex.responses == []  # No fabricated JSON-RPC response id.
+    if answer:
+        assert codex.requests == [
+            (
+                "turn/start",
+                {
+                    "threadId": "thread_123",
+                    "input": [
+                        {
+                            "type": "text",
+                            "text": f"Which environment?\n{answer}",
+                            "text_elements": [],
+                        }
+                    ],
+                },
+            )
+        ]
+    else:
+        assert codex.requests == []
+
+
+@pytest.mark.parametrize("text", ["", "I can continue while you decide."])
+def test_forwarder_posts_codex_async_questions(tmp_path: Path, text: str) -> None:
+    """Question-only and mixed assistant items retain their prompts and choices."""
+    posted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(json.loads(request.content))
+        return httpx.Response(202, json={"queued": False})
+
+    event = _agent_message_event("turn_123", "item_question", text)
+    event["params"]["item"]["questions"] = [
+        {"title": "Which environment?", "options": ["Development", "Production"]},
+        {"title": "Any constraints?", "options": None},
+    ]
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            base_url="http://127.0.0.1:8000", transport=httpx.MockTransport(handler)
+        ) as client:
+            await codex_native_forwarder._handle_event(
+                client,
+                session_id="conv_123",
+                bridge_dir=tmp_path,
+                usage_coalescer=_usage_coalescer(client),
+                elicitation_tracker=_elicitation_tracker(),
+                event=event,
+            )
+
+    asyncio.run(run())
+
+    assert len(posted) == 1
+    assert posted[0]["type"] == "external_conversation_item"
+    assert posted[0]["data"]["item_data"]["content"] == [
+        {
+            "type": "output_text",
+            "text": "\n\n".join(
+                part
+                for part in [
+                    text,
+                    "Which environment?\n- Development\n- Production",
+                    "Any constraints?",
+                ]
+                if part
+            ),
+        }
+    ]
+
+
 def test_forwarder_posts_codex_user_and_agent_messages(tmp_path: Path) -> None:
     """
     Codex app-server completed message items are translated into

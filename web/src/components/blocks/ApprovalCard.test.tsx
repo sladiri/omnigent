@@ -826,6 +826,44 @@ describe("ApprovalCard — AskUserQuestion form (parsed from content_preview)", 
     });
   });
 
+  it("submits a Codex async question with no predefined options", () => {
+    const submitSpy = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ submitApproval: submitSpy } as Partial<
+      ReturnType<typeof useChatStore.getState>
+    >);
+    render(
+      <ApprovalCard
+        elicitationId="elic_codex_async"
+        message="Codex needs input"
+        phase="codex_request_user_input"
+        policyName="codex_native_request_user_input"
+        contentPreview=""
+        requestedSchema={{}}
+        status="pending"
+        response={null}
+        askUserQuestion={{
+          questions: [
+            {
+              id: "0",
+              question: "What would you like me to work on?",
+              options: [],
+              multiSelect: false,
+              isOther: true,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("Codex needs input")).toBeDefined();
+    fireEvent.change(screen.getByTestId("ask-user-question-custom-input"), {
+      target: { value: "Fix the question controls" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
+    expect(submitSpy).toHaveBeenCalledWith("elic_codex_async", "accept", {
+      "0": "Fix the question controls",
+    });
+  });
+
   it("labels Codex structured input prompts as Codex prompts", () => {
     // Codex and Claude share the structured AskUserQuestion renderer,
     // but the title must reflect the producer. Otherwise a Codex plan

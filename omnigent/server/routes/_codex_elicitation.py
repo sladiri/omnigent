@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from omnigent.errors import ErrorCode, OmnigentError
-from omnigent.harnesses.codex_native.elicitation import is_codex_request_id
+from omnigent.harnesses.codex_native.elicitation import (
+    CODEX_ASYNC_USER_INPUT_METHOD,
+    is_codex_request_id,
+)
 from omnigent.server.schemas import ElicitationRequestParams, ElicitationResult
 
 _CODEX_MCP_ELICITATION_REQUEST_METHOD = "mcpServer/elicitation/request"
@@ -862,6 +865,10 @@ def _json_preview(value: Any) -> str:
 
 
 _CODEX_ELICITATION_ADAPTERS: dict[str, _CodexElicitationAdapter] = {
+    CODEX_ASYNC_USER_INPUT_METHOD: _CodexElicitationAdapter(
+        build_params=_codex_tool_request_user_input_params,
+        build_response=_codex_request_user_input_response,
+    ),
     _CODEX_MCP_ELICITATION_REQUEST_METHOD: _CodexElicitationAdapter(
         build_params=_codex_mcp_elicitation_params,
         build_response=_codex_mcp_elicitation_response,
