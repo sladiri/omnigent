@@ -1634,7 +1634,12 @@ async def probe_codex_model_options(
         raise ImportError("Native Codex model probing requires the 'codex' CLI on PATH.")
     config_overrides = list(launch.config_overrides)
     pinned_model = launch.model
-    env = _clean_codex_env()
+    passthrough_names = (
+        name.strip()
+        for name in os.environ.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
+        if name.strip()
+    )
+    env = _clean_codex_env(passthrough_names)
     if launch.profile is not None:
         databricks = await asyncio.to_thread(
             _databricks_launch_materialization,
