@@ -6029,3 +6029,29 @@ describe("saved sandbox inference policy", () => {
     },
   );
 });
+
+describe("focus prompt button", () => {
+  beforeEach(() => {
+    clearSessionDrafts();
+    setComposerState({ conversationId: "focus-prompt" });
+  });
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+  });
+
+  it.each(["", "Implement the requested change."])(
+    "prepends focus text to %j without sending",
+    (draft) => {
+      const props = composerProps();
+      renderWithTooltips(<Composer {...props} />);
+      fireEvent.change(textarea(), { target: { value: draft } });
+      fireEvent.click(screen.getByRole("button", { name: "focus" }));
+      expect(textarea()).toHaveValue(
+        `We're in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.\n\n${draft}`,
+      );
+      expect(props.onSend).not.toHaveBeenCalled();
+      expect(textarea()).toHaveFocus();
+    },
+  );
+});

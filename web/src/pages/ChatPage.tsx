@@ -4019,6 +4019,27 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-2 text-xs md:h-8"
+                title="focus"
+                disabled={disabled || isReadOnly || hasPendingElicitation || composerLockedByBtw}
+                onClick={() => {
+                  editText(
+                    draft.quotes[0]?.id ?? null,
+                    (text) =>
+                      `We're in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.\n\n${text}`,
+                  );
+                  dirtyRef.current = true;
+                  resetCursor();
+                  if (commandError !== null) setCommandError(null);
+                  textareaRef.current?.focus();
+                }}
+              >
+                focus
+              </Button>
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
