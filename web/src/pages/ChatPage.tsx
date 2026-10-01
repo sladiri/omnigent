@@ -4058,7 +4058,13 @@ function ComposerImpl(
                 size="sm"
                 className="h-9 px-2 text-xs md:h-8"
                 title="focus"
-                disabled={disabled || isReadOnly || hasPendingElicitation || composerLockedByBtw}
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
                 onClick={() => {
                   editText(
                     draft.quotes[0]?.id ?? null,

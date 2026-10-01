@@ -6091,6 +6091,7 @@ describe("saved sandbox inference policy", () => {
 describe("effort submit buttons", () => {
   const originalSetEffort = useChatStore.getState().setEffort;
   beforeEach(() => {
+    clearSessionDrafts();
     useChatStore.setState({ conversationId: "effort-submit", costControlModeOverride: null });
   });
   afterEach(() => {
@@ -6116,8 +6117,13 @@ describe("effort submit buttons", () => {
     fireEvent.click(button);
     expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
     expect(onSend).not.toHaveBeenCalled();
+    const focus = screen.getByRole("button", { name: "focus" });
+    expect(focus).toBeDisabled();
+    fireEvent.click(focus);
+    expect(textarea()).toHaveValue("hello");
     finish();
     await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
+    expect(focus).toBeEnabled();
   });
 
   it("keeps the draft when setting effort fails", async () => {
@@ -6129,6 +6135,7 @@ describe("effort submit buttons", () => {
     await screen.findByText("Effort failed");
     expect(onSend).not.toHaveBeenCalled();
     expect(textarea()).toHaveValue("keep this");
+    expect(screen.getByRole("button", { name: "focus" })).toBeEnabled();
   });
 
   it("only offers supported quick levels", () => {
