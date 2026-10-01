@@ -36,6 +36,7 @@ import {
 } from "@/components/KeyboardShortcut";
 import { useNavigate, useParams } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import {
   ChatComposer,
   type ComposerKeyIntent,
@@ -3307,11 +3308,14 @@ function ComposerImpl(
     textareaRef.current = tailTextareaRef.current;
   };
 
+  const effortSubmitPending = useRef(false);
+  const [savingSubmitEffort, setSavingSubmitEffort] = useState(false);
+  const submitRoutingMode = useChatStore((s) => s.costControlModeOverride);
   const submit = ({
     resetNativeInputSession = false,
   }: { resetNativeInputSession?: boolean } = {}) => {
     // The /btw overlay locks the composer — never send while it's open.
-    if (composerLockedByBtw) return;
+    if (composerLockedByBtw || effortSubmitPending.current || isReadOnly) return;
     const trimmed = fullText.trim();
     // Allow send if there's text, attached files, OR "@"-tagged paths.
     if (
@@ -3457,6 +3461,33 @@ function ComposerImpl(
     clearAttachments();
     setMentionedItems([]);
     setMention(null);
+  };
+
+  const submitWithEffort = async (effort: string) => {
+    if (
+      effortSubmitPending.current ||
+      !hasDraft ||
+      disabled ||
+      isReadOnly ||
+      sendDisabledReason !== null ||
+      composerLockedByBtw ||
+      hasPendingElicitation
+    )
+      return;
+    effortSubmitPending.current = true;
+    setSavingSubmitEffort(true);
+    setCommandError(null);
+    try {
+      await useChatStore.getState().setEffort(effort);
+      effortSubmitPending.current = false;
+      if (useChatStore.getState().conversationId === conversationId)
+        submit({ resetNativeInputSession: true });
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Failed to set effort");
+    } finally {
+      effortSubmitPending.current = false;
+      setSavingSubmitEffort(false);
+    }
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -3713,6 +3744,7 @@ function ComposerImpl(
         input={{
           ref: bindTailTextarea,
           value: draft.text,
+          readOnly: savingSubmitEffort,
           onChange: (e) => handleTextChange(null, e),
           onSelect: (e) => slashCompletion.onSelectionChange(e.currentTarget),
           onFocus: (e) => {
@@ -3965,6 +3997,7 @@ function ComposerImpl(
             <>
               <div className="flex min-w-0 items-center rounded-lg">
                 <SessionHarnessPicker
+                  runnerOnline={runnerOnline}
                   busy={configBusy}
                   busyRef={configBusyRef}
                   setBusy={setConfigBusy}
@@ -4019,6 +4052,22 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
+              {showEffort &&
+                !showInterruptButton &&
+                !(costRoutingEligible && submitRoutingMode === "on") && (
+                  <EffortSubmitButtons
+                    levels={effortLevels}
+                    disabled={
+                      !hasDraft ||
+                      disabled ||
+                      isReadOnly ||
+                      unreachable ||
+                      hasPendingElicitation ||
+                      savingSubmitEffort
+                    }
+                    onSubmit={(effort) => void submitWithEffort(effort)}
+                  />
+                )}
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -4031,7 +4080,8 @@ function ComposerImpl(
                             disabled ||
                             isReadOnly ||
                             sendDisabledReason !== null ||
-                            hasPendingElicitation
+                            hasPendingElicitation ||
+                            savingSubmitEffort
                       }
                       title={showInterruptButton ? "Interrupt" : (sendDisabledReason ?? undefined)}
                       label={showInterruptButton ? "Interrupt" : "Send"}
@@ -4606,6 +4656,7 @@ function SessionHarnessPicker({
   harnessLabel,
   showModels,
   showEffort,
+  runnerOnline,
   effortLevels,
   modelPickerKind,
   supportsModelReset,
@@ -4625,6 +4676,7 @@ function SessionHarnessPicker({
   harnessLabel: string | null;
   showModels: boolean;
   showEffort: boolean;
+  runnerOnline?: boolean;
   effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
   supportsModelReset: boolean;
@@ -4695,6 +4747,7 @@ function SessionHarnessPicker({
       : compactModelTriggerLabel(
           modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
         );
+  const showEffortControl = showEffort || modelPickerKind === "codex";
   const availableEfforts =
     modelPickerKind === "codex"
       ? codexEffortLevelsForModel(codexModelOptions, pickerSelectedModel)
@@ -4729,7 +4782,8 @@ function SessionHarnessPicker({
       const store = useChatStore.getState();
       const sourceSessionId = store.conversationId;
       await store.setModel(modelId, {
-        expectConfirmation: modelPickerKind === "claude" || modelPickerKind === "codex",
+        expectConfirmation:
+          modelPickerKind === "claude" || (modelPickerKind === "codex" && runnerOnline !== false),
       });
       if (useChatStore.getState().conversationId !== sourceSessionId) return;
       if (
@@ -4839,7 +4893,7 @@ function SessionHarnessPicker({
             : undefined
         }
         efforts={
-          showEffort && availableEfforts.length > 0
+          showEffortControl && availableEfforts.length > 0
             ? {
                 testId: "composer-agent-efforts",
                 header: modelPickerKind === "pi" ? "Thinking level" : "Effort",

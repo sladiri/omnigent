@@ -2637,8 +2637,10 @@ async def test_codex_elicitation_resolved_event_clears_hook_wait(
     assert resolved[0]["elicitation_id"] == expected_elicitation_id
 
 
+@pytest.mark.parametrize("method", ["item/tool/requestUserInput", "omnigent/asyncUserInput"])
 async def test_codex_request_user_input_hook_returns_id_keyed_answers(
     client: httpx.AsyncClient,
+    method: str,
 ) -> None:
     """
     Codex ``item/tool/requestUserInput`` frames use the shared
@@ -2653,7 +2655,7 @@ async def test_codex_request_user_input_hook_returns_id_keyed_answers(
     session_id = await _create_session(client, agent["id"])
     payload = {
         "id": "req_9",
-        "method": "item/tool/requestUserInput",
+        "method": method,
         "params": {
             "threadId": "thread_123",
             "turnId": "turn_123",
@@ -2698,6 +2700,95 @@ async def test_codex_request_user_input_hook_returns_id_keyed_answers(
     resp = await hook_task
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"answers": {"framework": {"answers": ["React"]}}}
+
+
+@pytest.mark.parametrize("action", ["accept", "decline"])
+async def test_codex_async_question_forwarder_web_round_trip(
+    client: httpx.AsyncClient,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """Live async questions reach the pending index and answers bypass the message queue."""
+    from unittest.mock import AsyncMock
+
+    from omnigent.harnesses.codex_native import forwarder
+    from omnigent.harnesses.codex_native.app_server import CodexAppServerClient
+    from omnigent.runtime import pending_elicitations
+    from omnigent.server.routes.sessions import routes_hooks
+
+    interrupt = AsyncMock()
+    monkeypatch.setattr(routes_hooks, "_forward_session_change_to_runner", interrupt)
+    agent = await create_test_agent(client, "test-codex-async-question")
+    session_id = await _create_session(client, agent["id"])
+    codex = AsyncMock(spec=CodexAppServerClient)
+    tracker = forwarder._CodexElicitationTaskTracker()
+    drain_task = asyncio.create_task(_drain_until_elicitation(session_id))
+    await asyncio.sleep(0.05)
+    try:
+        await forwarder._handle_event(
+            client,
+            session_id=session_id,
+            bridge_dir=tmp_path,
+            usage_coalescer=forwarder._SessionUsageCoalescer(client, session_id),
+            elicitation_tracker=tracker,
+            codex_client=codex,
+            event={
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread_async",
+                    "turnId": "turn_async",
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "question_async",
+                        "text": "",
+                        "questions": [{"title": "Which environment?", "options": ["Development"]}],
+                    },
+                },
+            },
+        )
+        event = await drain_task
+        assert (
+            event["params"]["ask_user_question"]["questions"][0]["question"]
+            == "Which environment?"
+        )
+        assert pending_elicitations.count_for(session_id) == 1
+        snapshot = await client.get(f"/v1/sessions/{session_id}")
+        assert snapshot.status_code == 200
+        assert (
+            snapshot.json()["pending_elicitations"][0]["elicitation_id"] == event["elicitation_id"]
+        )
+        verdict = await _post_approval(
+            client,
+            session_id,
+            event["elicitation_id"],
+            action,
+            content={"0": "Development"} if action == "accept" else None,
+        )
+        assert verdict.status_code == 202, verdict.text
+        await asyncio.wait_for(tracker.drain(), timeout=3)
+        assert pending_elicitations.count_for(session_id) == 0
+        interrupt.assert_not_called()
+        codex.respond.assert_not_called()
+        if action == "accept":
+            codex.request.assert_awaited_once_with(
+                "turn/start",
+                {
+                    "threadId": "thread_async",
+                    "input": [
+                        {
+                            "type": "text",
+                            "text": "Which environment?\nDevelopment",
+                            "text_elements": [],
+                        }
+                    ],
+                },
+            )
+        else:
+            codex.request.assert_not_called()
+    finally:
+        await tracker.close()
+        drain_task.cancel()
 
 
 async def test_codex_plan_mode_final_prompt_round_trip(

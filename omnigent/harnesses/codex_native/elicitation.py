@@ -7,6 +7,8 @@ import json
 from typing import TypeGuard
 
 _CODEX_ELICITATION_ID_DIGEST_LENGTH = 32
+# Internal hook method; async assistant questions are not JSON-RPC requests.
+CODEX_ASYNC_USER_INPUT_METHOD = "omnigent/asyncUserInput"
 
 
 def is_codex_request_id(value: object) -> TypeGuard[int | str]:

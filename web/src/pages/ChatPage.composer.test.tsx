@@ -5669,6 +5669,64 @@ describe("Composer config gear", () => {
     expect(calls).toEqual(["model", "effort"]);
   });
 
+  it.each([true, false])(
+    "configures Codex before wake with no reported model (catalog ready: %s)",
+    async (catalogReady) => {
+      const options = [
+        {
+          id: "codex-resume-model",
+          displayName: "Resume model",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+        },
+      ];
+      const calls: string[] = [];
+      const setModel = vi.fn().mockImplementation(async (model) => {
+        useChatStore.setState({ sessionModelOverride: model });
+        calls.push("model");
+      });
+      const setEffort = vi.fn().mockImplementation(async () => {
+        calls.push("effort");
+      });
+      useChatStore.setState({
+        setModel,
+        setEffort,
+        llmModel: null,
+        sessionModelOverride: null,
+        sessionReasoningEffort: "high",
+      });
+      const props = composerProps({
+        showModels: true,
+        showEffort: false,
+        effortLevels: [],
+        modelPickerKind: "codex",
+        unreachable: false,
+        runnerOnline: false,
+        codexModelOptions: options,
+      });
+      const { rerender } = renderWithTooltips(
+        <Composer {...props} codexModelOptions={catalogReady ? options : []} />,
+      );
+      await openSessionModels();
+      expect(screen.queryByTestId("composer-agent-efforts")).toBeNull();
+      if (!catalogReady) {
+        rerender(
+          <TooltipProvider>
+            <Composer {...props} />
+          </TooltipProvider>,
+        );
+        expect(screen.queryByTestId("composer-agent-efforts")).toBeNull();
+      }
+      fireEvent.click(screen.getByTestId("composer-agent-model-codex-resume-model"));
+      await screen.findByTestId("composer-agent-efforts");
+      expect(document.querySelector('[data-effort-level="ultra"]')).toBeNull();
+      fireEvent.click(screen.getByTestId("composer-agent-effort-low"));
+      await waitFor(() => expect(setEffort).toHaveBeenCalledWith("low"));
+      expect(setModel).toHaveBeenCalledWith("codex-resume-model", { expectConfirmation: false });
+      expect(calls).toEqual(["model", "effort"]);
+    },
+  );
+
   it("leaves no lingering error indicator when a session config update fails", async () => {
     const setModel = vi.fn().mockRejectedValue(new Error("Host stopped responding"));
     const options = [
@@ -6028,4 +6086,54 @@ describe("saved sandbox inference policy", () => {
       expect(useChatStore.getState().setModel).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("effort submit buttons", () => {
+  const originalSetEffort = useChatStore.getState().setEffort;
+  beforeEach(() => {
+    useChatStore.setState({ conversationId: "effort-submit", costControlModeOverride: null });
+  });
+  afterEach(() => {
+    cleanup();
+    useChatStore.setState({ setEffort: originalSetEffort });
+  });
+
+  it.each(["low", "medium", "high"])("sets %s before sending exactly once", async (effort) => {
+    let finish!: () => void;
+    const setEffort = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    useChatStore.setState({ setEffort });
+    const onSend = vi.fn();
+    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
+    const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
+    expect(button).toBeDisabled();
+    fireEvent.change(textarea(), { target: { value: "hello" } });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
+  });
+
+  it("keeps the draft when setting effort fails", async () => {
+    useChatStore.setState({ setEffort: vi.fn().mockRejectedValue(new Error("Effort failed")) });
+    const onSend = vi.fn();
+    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
+    fireEvent.change(textarea(), { target: { value: "keep this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send with low effort" }));
+    await screen.findByText("Effort failed");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea()).toHaveValue("keep this");
+  });
+
+  it("only offers supported quick levels", () => {
+    renderWithTooltips(<Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />);
+    expect(screen.queryByRole("button", { name: "Send with low effort" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send with high effort" })).toBeInTheDocument();
+  });
 });

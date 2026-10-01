@@ -784,3 +784,25 @@ async def test_codex_native_launch_config_reads_reasoning_effort(
         config = await _codex_native_launch_config(session_id="conv_abc", server_client=client)
 
     assert config.reasoning_effort == expected
+
+
+def test_build_codex_native_server_honors_runner_env_passthrough(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "CUSTOM_MCP_TOKEN, CUSTOM_MCP_URL")
+    monkeypatch.setenv("CUSTOM_MCP_TOKEN", "token")
+    monkeypatch.setenv("CUSTOM_MCP_URL", "https://mcp.example.com")
+    monkeypatch.setenv("UNLISTED_SECRET", "secret")
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model=None,
+        profile=None,
+        bridge_dir=None,
+        codex_path="codex",
+    )
+    assert app_server.env["CUSTOM_MCP_TOKEN"] == "token"
+    assert app_server.env["CUSTOM_MCP_URL"] == "https://mcp.example.com"
+    assert "UNLISTED_SECRET" not in app_server.env

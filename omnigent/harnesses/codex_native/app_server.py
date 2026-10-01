@@ -3303,7 +3303,12 @@ def build_codex_native_server(
             "installed on a PATH the host daemon didn't inherit (e.g. an "
             "nvm-managed bin dir), set OMNIGENT_CODEX_PATH=/path/to/codex."
         )
-    env = _clean_codex_env()
+    passthrough_names = (
+        name.strip()
+        for name in os.environ.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
+        if name.strip()
+    )
+    env = _clean_codex_env(passthrough_names)
     config_overrides: list[str] = []
     pinned_model = model
     if profile is not None:
