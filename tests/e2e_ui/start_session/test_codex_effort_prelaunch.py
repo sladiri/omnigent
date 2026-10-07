@@ -142,6 +142,10 @@ async def _drive_codex_effort_prelaunch(base_url: str, session_id: str) -> None:
             await expect(page.get_by_test_id("new-chat-landing-agent-models")).to_contain_text(
                 "GPT Live Default"
             )
+            await expect(
+                page.get_by_test_id("new-chat-landing-agent-effort-default")
+            ).to_have_attribute("data-disabled", "")
+            await page.get_by_role("menuitemcheckbox", name="GPT Live Default", exact=True).click()
             effort = page.get_by_test_id("new-chat-landing-agent-effort-high")
             await expect(effort).to_be_visible()
             await expect(effort).not_to_have_attribute("data-disabled", "")

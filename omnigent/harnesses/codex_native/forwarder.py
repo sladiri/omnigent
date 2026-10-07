@@ -49,6 +49,7 @@ from omnigent.harnesses.codex_native.bridge import (
     write_bridge_state,
 )
 from omnigent.harnesses.codex_native.elicitation import (
+    CODEX_ASYNC_USER_INPUT_METHOD,
     codex_elicitation_id,
 )
 from omnigent.harnesses.codex_native.elicitation import (
@@ -1765,6 +1766,7 @@ class _PendingCodexElicitation:
     turn_id: str | None
     request_id: int | str
     elicitation_id: str
+    async_input: bool = False
 
 
 class _CodexElicitationTaskTracker:
@@ -1787,6 +1789,7 @@ class _CodexElicitationTaskTracker:
         """
         self._pending: dict[asyncio.Task[None], _PendingCodexElicitation] = {}
         self._posted_resolutions: set[str] = set()
+        self._async_questions_seen: set[str] = set()
 
     def start(
         self,
@@ -1813,6 +1816,12 @@ class _CodexElicitationTaskTracker:
         if not isinstance(method, str) or not _is_codex_request_id(request_id):
             _logger.warning("Codex forwarder cannot track malformed elicitation request")
             return
+        async_input = method == CODEX_ASYNC_USER_INPUT_METHOD
+        if async_input:
+            key = codex_elicitation_id(session_id, method, request_id)
+            if key in self._async_questions_seen:
+                return
+            self._async_questions_seen.add(key)
         task = asyncio.create_task(
             self._run_one(
                 client,
@@ -1823,6 +1832,7 @@ class _CodexElicitationTaskTracker:
             name="codex-native-elicitation-hook",
         )
         self._pending[task] = _PendingCodexElicitation(
+            async_input=async_input,
             thread_id=_thread_id_from_params(params),
             turn_id=_turn_id_from_payload(params.get("turn")) or _turn_id_from_payload(params),
             request_id=request_id,
@@ -1887,7 +1897,7 @@ class _CodexElicitationTaskTracker:
         thread_id = _thread_id_from_params(params)
         turn_id = _turn_id_from_payload(params.get("turn")) or _turn_id_from_payload(params)
         for _task, pending in list(self._pending.items()):
-            if _pending_elicitation_matches_terminal_turn(
+            if not pending.async_input and _pending_elicitation_matches_terminal_turn(
                 pending,
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -3132,6 +3142,13 @@ async def _handle_event(
             forwarder_state=forwarder_state,
             bridge_dir=bridge_dir,
         )
+        # Replay has no Codex client: historical questions must not reopen forms.
+        if codex_client is not None:
+            question_event = _async_question_request(params)
+            if question_event is not None:
+                elicitation_tracker.start(
+                    client, codex_client, session_id=route_session_id, event=question_event
+                )
 
 
 def _resolve_event_session(
@@ -4286,6 +4303,50 @@ def _is_codex_elicitation_request(event: CodexMessage) -> bool:
     )
 
 
+def _async_question_request(params: _JsonObject) -> CodexMessage | None:
+    """Adapt a live assistant question item to the shared question form."""
+    item = params.get("item")
+    thread_id = _thread_id_from_params(params)
+    if not isinstance(item, dict) or item.get("type") != "agentMessage" or not thread_id:
+        return None
+    item_id = item.get("id")
+    raw_questions = item.get("questions")
+    if not isinstance(item_id, str) or not item_id or not isinstance(raw_questions, list):
+        return None
+    questions: list[_JsonObject] = []
+    for index, entry in enumerate(raw_questions):
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        options = entry.get("options")
+        questions.append(
+            {
+                "id": str(index),
+                "question": title,
+                "isOther": True,
+                "options": [
+                    {"label": option} for option in options if isinstance(option, str) and option
+                ]
+                if isinstance(options, list)
+                else [],
+            }
+        )
+    if not questions:
+        return None
+    return {
+        "id": f"async:{thread_id}:{item_id}",
+        "method": CODEX_ASYNC_USER_INPUT_METHOD,
+        "params": {
+            "threadId": thread_id,
+            "turnId": _turn_id_from_payload(params),
+            "itemId": item_id,
+            "questions": questions,
+        },
+    }
+
+
 async def _handle_codex_elicitation_request(
     client: httpx.AsyncClient,
     codex_client: CodexAppServerClient,
@@ -4320,6 +4381,47 @@ async def _handle_codex_elicitation_request(
         event=event,
     )
     if result is None:
+        return
+    if event.get("method") == CODEX_ASYNC_USER_INPUT_METHOD:
+        params = event.get("params")
+        answers = result.get("answers")
+        if not isinstance(params, dict) or not isinstance(answers, dict):
+            return
+        questions = params.get("questions")
+        if not isinstance(questions, list):
+            return
+        parts: list[str] = []
+        for question in questions:
+            if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+                continue
+            answer = answers.get(question.get("id"))
+            values = answer.get("answers") if isinstance(answer, dict) else None
+            if isinstance(values, list) and values and all(isinstance(v, str) for v in values):
+                parts.append(question["question"] + "\n" + "\n".join(values))
+        if parts:
+            # turn/start steers an active turn, or starts a follow-up on an idle thread.
+            try:
+                await codex_client.request(
+                    "turn/start",
+                    {
+                        "threadId": params["threadId"],
+                        "input": [
+                            {"type": "text", "text": "\n\n".join(parts), "text_elements": []}
+                        ],
+                    },
+                )
+            except Exception:  # Surface failed delivery before the tracker logs it.
+                await _post_agent_message(
+                    client,
+                    session_id,
+                    params,
+                    {
+                        "text": "Could not confirm delivery of your answer to Codex. "
+                        "Check the terminal before resending. Your answer was:\n\n"
+                        + "\n\n".join(parts),
+                    },
+                )
+                raise
         return
     await codex_client.respond(request_id, result)
 
@@ -6152,7 +6254,23 @@ async def _post_agent_message(
     :returns: Whether the item was accepted by the server.
     """
     text = item.get("text")
-    if not isinstance(text, str) or not text:
+    parts = [text] if isinstance(text, str) and text else []
+    # Keep question text in history; live events also open an actionable form.
+    questions = item.get("questions")
+    if isinstance(questions, list):
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            title = question.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            lines = [title]
+            options = question.get("options")
+            if isinstance(options, list):
+                lines.extend(f"- {option}" for option in options if isinstance(option, str))
+            parts.append("\n".join(lines))
+    text = "\n\n".join(parts)
+    if not text:
         return False
     return await _post_external_item(
         client,

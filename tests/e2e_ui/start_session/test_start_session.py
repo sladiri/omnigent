@@ -2085,7 +2085,11 @@ async def _drive_codex_model(base_url: str, session_id: str) -> None:
                                     "displayName": "GPT Live Default",
                                     "isDefault": True,
                                 },
-                                {"id": "gpt-live-fast", "displayName": "GPT Live Fast"},
+                                {
+                                    "id": "gpt-live-fast",
+                                    "displayName": "GPT Live Fast",
+                                    "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}],
+                                },
                             ]
                         }
                     ),
@@ -2118,7 +2122,11 @@ async def _drive_codex_model(base_url: str, session_id: str) -> None:
             await expect(model).to_contain_text("GPT Live Default")
             # Codex options render decorated display names (same as claude),
             # so pick by the display name; the create still sends the id.
+            await expect(
+                page.get_by_test_id("new-chat-landing-agent-effort-default")
+            ).to_have_attribute("data-disabled", "")
             await page.get_by_role("menuitemcheckbox", name="GPT Live Fast", exact=True).click()
+            await page.get_by_test_id("new-chat-landing-agent-effort-xhigh").click()
             await _close_entry_models(page)
 
             await page.get_by_test_id("new-chat-landing-input").fill("set up the project")
@@ -2128,7 +2136,7 @@ async def _drive_codex_model(base_url: str, session_id: str) -> None:
             body = create_bodies[0]
             assert body["agent_id"] == "ag_codex_e2e", body
             assert body.get("model_override") == "gpt-live-fast", body
-            assert body.get("reasoning_effort") is None, body
+            assert body.get("reasoning_effort") == "xhigh", body
         finally:
             await browser.close()
 

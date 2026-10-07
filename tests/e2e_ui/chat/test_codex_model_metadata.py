@@ -330,10 +330,23 @@ def _patch_precatalog_codex_session_on_host(
     :param reported_model: Model id reported by the session.
     :param runner_online: Whether the session runner is connected.
     """
+    patches: list[dict] = []
+    overrides: dict = {}
+    latest_payload: dict = {}
 
     def _patch_snapshot(route: Route) -> None:
+        nonlocal latest_payload
         request = route.request
-        if request.method != "GET" or urlparse(request.url).path != f"/v1/sessions/{session_id}":
+        if urlparse(request.url).path != f"/v1/sessions/{session_id}":
+            route.continue_()
+            return
+        if request.method == "PATCH":
+            patch = request.post_data_json
+            patches.append(patch)
+            overrides.update(patch)
+            route.fulfill(json={**latest_payload, **overrides})
+            return
+        if request.method != "GET":
             route.continue_()
             return
         response = fetch_with_retry(route)
@@ -348,6 +361,8 @@ def _patch_precatalog_codex_session_on_host(
         payload["host_id"] = _PRE_CATALOG_HOST_ID
         payload["runner_online"] = runner_online
         payload["host_online"] = True
+        payload.update(overrides)
+        latest_payload = payload
         route.fulfill(
             status=200,
             headers={**response.headers, "content-type": "application/json"},
@@ -385,6 +400,43 @@ def _patch_precatalog_codex_session_on_host(
         _serve_host_probe,
     )
     page.route(re.compile(r"/health(\?|$)"), _force_online_health)
+    return patches
+
+
+def test_sleeping_codex_session_can_select_model_and_effort_without_a_model_report(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """A sleeping session with missing metadata can save settings before wake."""
+    base_url, session_id = seeded_session
+    patches = _patch_precatalog_codex_session_on_host(
+        page, session_id, reported_model=None, runner_online=False
+    )
+    page.goto(f"{base_url}/c/{session_id}")
+    gear = page.get_by_test_id("composer-config-gear")
+    expect(gear).to_have_attribute("aria-disabled", "false", timeout=15_000)
+    gear.click()
+    page.get_by_test_id("composer-agent-edit").click()
+    expect(page.get_by_test_id("composer-agent-efforts")).to_be_visible()
+    expect(page.locator("[data-effort-level]")).to_have_count(0)
+    expect(page.get_by_text("Select a model to choose effort", exact=True)).to_be_visible()
+    page.locator('[role="menuitemcheckbox"][data-model-id="gpt-5.6-luna"]').click()
+    expect(page.get_by_test_id("composer-agent-effort-xhigh")).to_be_visible()
+    expect(page.locator('[role="menuitemcheckbox"][data-effort-level="ultra"]')).to_have_count(0)
+    with page.expect_response(
+        lambda response: (
+            response.request.method == "PATCH"
+            and response.request.post_data_json.get("reasoning_effort") == "xhigh"
+        )
+    ):
+        page.locator('[role="menuitemcheckbox"][data-effort-level="xhigh"]').click()
+    model_index = next(
+        i for i, patch in enumerate(patches) if patch.get("model_override") == "gpt-5.6-luna"
+    )
+    effort_index = next(
+        i for i, patch in enumerate(patches) if patch.get("reasoning_effort") == "xhigh"
+    )
+    assert model_index < effort_index
 
 
 def test_offline_codex_model_label_matches_gateway_id_to_host_catalog(

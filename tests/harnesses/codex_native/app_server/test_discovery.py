@@ -233,7 +233,10 @@ async def test_probe_codex_model_options_uses_launch_config_and_marks_default(
             )
         ),
     )
-    monkeypatch.setattr(codex_native_app_server, "_clean_codex_env", lambda: {"PATH": "/bin"})
+    monkeypatch.setenv("OMNIGENT_RUNNER_ENV_PASSTHROUGH", " GITHUB_PAT, ,OPENAI_API_KEY ")
+    monkeypatch.setenv("GITHUB_PAT", "test-wrapper-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-denied-key")
+    monkeypatch.setenv("UNLISTED_SECRET", "test-private-value")
 
     captured: dict[str, object] = {}
 
@@ -317,6 +320,9 @@ async def test_probe_codex_model_options_uses_launch_config_and_marks_default(
     ]
     env = captured["env"]
     assert isinstance(env, dict)
+    assert env["GITHUB_PAT"] == "test-wrapper-token"
+    assert "OPENAI_API_KEY" not in env
+    assert "UNLISTED_SECRET" not in env
     assert env["DATABRICKS_HOST"] == "https://ws.example"
     assert str(tmp_path / ".omnigent" / "cache" / "codex-model-probe") in env["CODEX_HOME"]
     assert Path(env["CODEX_HOME"]).is_dir()
@@ -362,7 +368,9 @@ async def test_probe_codex_model_options_probes_every_launch_shape(
         return ambient
 
     monkeypatch.setattr(codex_native_app_server, "resolve_native_codex_launch", _resolve)
-    monkeypatch.setattr(codex_native_app_server, "_clean_codex_env", lambda: {"PATH": "/bin"})
+    monkeypatch.setattr(
+        codex_native_app_server, "_clean_codex_env", lambda extra_allow=(): {"PATH": "/bin"}
+    )
     captured: dict[str, object] = {}
 
     class _FakeProcess:

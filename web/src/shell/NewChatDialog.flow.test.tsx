@@ -127,7 +127,13 @@ vi.mock("@/hooks/useHosts", () => ({
   useHosts: vi.fn(),
   useHostModelOptions: vi.fn(() => ({
     data: [
-      { id: "opus", displayName: "Opus" },
+      {
+        id: "opus",
+        displayName: "Opus",
+        supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({
+          reasoningEffort,
+        })),
+      },
       { id: "sonnet", displayName: "Sonnet" },
       { id: "haiku", displayName: "Haiku" },
     ],
@@ -412,7 +418,13 @@ beforeEach(() => {
   projects = [];
   vi.mocked(useHostModelOptions).mockReturnValue({
     data: [
-      { id: "opus", displayName: "Opus" },
+      {
+        id: "opus",
+        displayName: "Opus",
+        supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({
+          reasoningEffort,
+        })),
+      },
       { id: "sonnet", displayName: "Sonnet" },
       { id: "haiku", displayName: "Haiku" },
     ],
@@ -1732,6 +1744,29 @@ describe("NewChatLandingScreen create flow", () => {
     );
     pickPermissionOption("default");
     expect(screen.queryByTestId("new-chat-landing-agy-skip-banner")).toBeNull();
+  });
+
+  it.each(
+    ["low", "medium", "high"].flatMap((effort) =>
+      ["claude-native-ui", "codex-native-ui"].map((name) => ({ effort, name })),
+    ),
+  )("creates $name with clicked $effort effort", async ({ effort, name }) => {
+    localStorage.setItem(
+      "omnigent:last-mode-by-harness",
+      JSON.stringify({ "codex-native": { model: "opus" } }),
+    );
+    setAgents([agent({ id: "ag_native", name, display_name: name })]);
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "conv_effort" }),
+    } as unknown as Response);
+    renderLanding();
+    await waitForWorkspaceSeed();
+    typeMessage("go");
+    fireEvent.click(screen.getByRole("button", { name: `Send with ${effort} effort` }));
+    await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
+    const [, init] = vi.mocked(authenticatedFetch).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).reasoning_effort).toBe(effort);
   });
 
   it("omits model + effort on create when the picker is untouched for claude-native", async () => {

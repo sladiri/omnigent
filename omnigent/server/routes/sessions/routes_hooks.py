@@ -17,7 +17,10 @@ from fastapi.responses import Response
 from omnigent.debug_logging import add_audit_attrs
 from omnigent.entities import Conversation
 from omnigent.errors import ElicitationDeclinedError, ErrorCode, OmnigentError
-from omnigent.harnesses.codex_native.elicitation import codex_elicitation_id
+from omnigent.harnesses.codex_native.elicitation import (
+    CODEX_ASYNC_USER_INPUT_METHOD,
+    codex_elicitation_id,
+)
 from omnigent.native.native_coding_agents import (
     native_coding_agent_for_harness,
     native_coding_agent_for_wrapper_label,
@@ -1154,7 +1157,7 @@ def register_hooks_routes(
         )
         if result is None:
             return Response(status_code=status.HTTP_200_OK)
-        if result.action == "decline":
+        if result.action == "decline" and codex_request.method != CODEX_ASYNC_USER_INPUT_METHOD:
             # Explicit user decline: interrupt Codex before returning the
             # deny response, same as the Claude-native path. The await
             # ensures the abort signal reaches Codex before it processes

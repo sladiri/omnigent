@@ -59,6 +59,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { iconForAgent } from "@/components/AgentCard";
@@ -2263,7 +2264,9 @@ export function NewChatLandingScreen() {
           // the other visit's workspace — drop the marker with it so the
           // seed/retract machinery starts clean for this visit.
           autoSeededBranch: "",
+          costControlMode: null,
         };
+  const projectDraftMismatch = landingDraft !== null && landingDraft.project !== projectParam;
 
   const [message, setMessage] = useState<string>(() => restoredDraft?.message ?? "");
   // Composer text captured when voice dictation starts, so Esc can revert to it.
@@ -2542,7 +2545,9 @@ export function NewChatLandingScreen() {
   const [pickedHarness, setPickedHarness] = useState<string | null>(
     () =>
       restoredDraft?.pickedHarness ??
-      readLastHarness(restoredDraft?.pickedAgentId ?? readLastAgentId()),
+      (projectDraftMismatch
+        ? null
+        : readLastHarness(restoredDraft?.pickedAgentId ?? readLastAgentId())),
   );
   // Per-session model + reasoning effort for the claude-native model picker.
   // "" = unselected: nothing is checked and `model_override` / `reasoning_effort`
@@ -3591,10 +3596,10 @@ export function NewChatLandingScreen() {
       : selectedNativeHarness === "pi-native"
         ? PI_NATIVE_EFFORTS
         : selectedNativeHarness === "codex-native"
-          ? codexEffortLevelsForModel(
-              codexModelOptions,
-              pickedModel || codexModelOptions.find((option) => option.isDefault)?.id,
-            ).map((value) => ({ value, label: normalizeEffortLabel(value) }))
+          ? codexEffortLevelsForModel(codexModelOptions, pickedModel).map((value) => ({
+              value,
+              label: normalizeEffortLabel(value),
+            }))
           : [];
   const rememberPickerOptions = (harness: string, options: HarnessOptions) => {
     const previous = pickerEdits;
@@ -3640,10 +3645,7 @@ export function NewChatLandingScreen() {
     const picked = model === MODEL_SELECT_DEFAULT ? "" : model;
     const effort =
       selectedNativeHarness === "codex-native" &&
-      !codexEffortLevelsForModel(
-        codexModelOptions,
-        picked || codexModelOptions.find((option) => option.isDefault)?.id,
-      ).includes(pickedEffort)
+      !codexEffortLevelsForModel(codexModelOptions, picked).includes(pickedEffort)
         ? ""
         : pickedEffort;
     setPickedModel(picked);
@@ -3837,7 +3839,9 @@ export function NewChatLandingScreen() {
                           ? () => selectFusionModel(option.fusion!.default)
                           : () =>
                               selectPickerModel(
-                                option.isDefault ? MODEL_SELECT_DEFAULT : option.id,
+                                option.isDefault && selectedNativeHarness !== "codex-native"
+                                  ? MODEL_SELECT_DEFAULT
+                                  : option.id,
                               ),
                         testId: `new-chat-landing-agent-model-${option.id}`,
                         title: nativeModelLabel(option),
@@ -3848,16 +3852,24 @@ export function NewChatLandingScreen() {
               : undefined
           }
           efforts={
-            pickerEffortOptions.length > 0
+            pickerEffortOptions.length > 0 || selectedNativeHarness === "codex-native"
               ? {
                   testId: "new-chat-landing-agent-efforts",
                   header: selectedNativeHarness === "pi-native" ? "Thinking level" : "Effort",
+                  leading:
+                    selectedNativeHarness === "codex-native" && pickerEffortOptions.length === 0 ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground">
+                        {pickedModel
+                          ? "Effort options unavailable for this model"
+                          : "Select a model to choose effort"}
+                      </p>
+                    ) : undefined,
                   choices: [
                     {
                       key: "__default__",
                       label: "Default",
                       checked: !routingOn && pickedEffort === "",
-                      disabled: routingOn,
+                      disabled: routingOn || pickerEffortOptions.length === 0,
                       onSelect: () => selectPickerEffort(EFFORT_SELECT_NONE),
                       testId: "new-chat-landing-agent-effort-default",
                     },
@@ -3865,7 +3877,7 @@ export function NewChatLandingScreen() {
                       key: option.value,
                       label: option.label,
                       checked: !routingOn && pickedEffort === option.value,
-                      disabled: routingOn,
+                      disabled: routingOn || pickerEffortOptions.length === 0,
                       onSelect: () => selectPickerEffort(option.value),
                       testId: `new-chat-landing-agent-effort-${option.value}`,
                     })),
@@ -4115,18 +4127,12 @@ export function NewChatLandingScreen() {
           ? stored.model
           : "");
       setPickedModel(seededCodexModel);
-      // Restore the remembered Codex effort only while the seeded model's
-      // ladder (the catalog default's when no model is pinned) still offers
-      // it — anything else resolves to "" so a level another harness left in
-      // the shared state never rides a Codex create.
+      // Restore effort only when the resolved model still offers it.
       setPickedEffort(
         !storedRoutingOn &&
           selectedNativeHarness === "codex-native" &&
           stored.effort != null &&
-          codexEffortLevelsForModel(
-            codexModelOptions,
-            seededCodexModel || (codexModelOptions.find((m) => m.isDefault)?.id ?? null),
-          ).includes(stored.effort)
+          codexEffortLevelsForModel(codexModelOptions, seededCodexModel).includes(stored.effort)
           ? stored.effort
           : "",
       );
@@ -4492,7 +4498,7 @@ export function NewChatLandingScreen() {
     if (writes.agentId !== undefined) {
       setPickedAgentId((cur) => cur ?? writes.agentId!);
       if (pickedAgentId === null) {
-        setPickedHarness(readLastHarness(writes.agentId));
+        setPickedHarness(projectDraftMismatch ? null : readLastHarness(writes.agentId));
         // Config-sourced seed into an empty slot (as opposed to the last-agent
         // fallback): the create omits the field until any other write flips this.
         agentFromConfigRef.current = writes.agentId === prefillConfig?.agentId;
@@ -4520,6 +4526,7 @@ export function NewChatLandingScreen() {
     selectedHostId,
     pickedAgentId,
     prefillConfig,
+    projectDraftMismatch,
     defaultSandboxProvider,
   ]);
 
@@ -5173,7 +5180,7 @@ export function NewChatLandingScreen() {
     }
   }
 
-  async function handleCreate() {
+  async function handleCreate(effortOverride?: string) {
     // Mirror the Send button's disabled condition (canSubmit) so the Enter-key
     // and form-submit paths that call this directly can't create a session with
     // a blank message, host, agent, or workspace.
@@ -5294,10 +5301,13 @@ export function NewChatLandingScreen() {
         !routingOwnsModel &&
         (agentSupportsPermissionMode ||
           selectedNativeHarness === "pi-native" ||
-          nativeAgent?.harness === "codex-native" ||
+          (nativeAgent?.harness === "codex-native" &&
+            codexEffortLevelsForModel(codexModelOptions, pickedModel).includes(
+              effortOverride ?? pickedEffort,
+            )) ||
           nativeAgent?.harness === "devin-native") &&
-        pickedEffort
-          ? pickedEffort
+        (effortOverride ?? pickedEffort)
+          ? (effortOverride ?? pickedEffort)
           : null;
       // Resolved default (shown when nothing is pinned): the catalog's default
       // row's provider-facing model id, else its row id.
@@ -6804,6 +6814,19 @@ export function NewChatLandingScreen() {
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
                     />
+                    {!smartRoutingHarnessSelected &&
+                      !(smartRoutingEligible && costControlMode === "on") &&
+                      (supportsPermissionMode || selectedNativeHarness === "codex-native") && (
+                        <EffortSubmitButtons
+                          levels={
+                            selectedNativeHarness === "codex-native"
+                              ? codexEffortLevelsForModel(codexModelOptions, pickedModel || null)
+                              : CLAUDE_NATIVE_EFFORTS.map((effort) => effort.value)
+                          }
+                          disabled={!canSubmit}
+                          onSubmit={(effort) => void handleCreate(effort)}
+                        />
+                      )}
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
