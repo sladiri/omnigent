@@ -6102,32 +6102,39 @@ describe("effort submit buttons", () => {
     useChatStore.setState({ setEffort: originalSetEffort });
   });
 
-  it.each(["low", "medium", "high"])("sets %s before sending exactly once", async (effort) => {
-    let finish!: () => void;
-    const setEffort = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    useChatStore.setState({ setEffort });
-    const onSend = vi.fn();
-    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
-    const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
-    expect(button).toBeDisabled();
-    fireEvent.change(textarea(), { target: { value: "hello" } });
-    fireEvent.click(button);
-    fireEvent.click(button);
-    expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
-    expect(onSend).not.toHaveBeenCalled();
-    const focus = screen.getByRole("button", { name: "focus" });
-    expect(focus).toBeDisabled();
-    fireEvent.click(focus);
-    expect(textarea()).toHaveValue("hello");
-    finish();
-    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
-    expect(focus).toBeEnabled();
-  });
+  it.each(["low", "medium", "high", "xhigh"])(
+    "sets %s before sending exactly once",
+    async (effort) => {
+      let finish!: () => void;
+      const setEffort = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      useChatStore.setState({ setEffort });
+      const onSend = vi.fn();
+      renderWithTooltips(
+        <Composer
+          {...composerProps({ onSend, effortLevels: ["low", "medium", "high", "xhigh"] })}
+        />,
+      );
+      const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
+      expect(button).toBeDisabled();
+      fireEvent.change(textarea(), { target: { value: "hello" } });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
+      expect(onSend).not.toHaveBeenCalled();
+      const focus = screen.getByRole("button", { name: "focus" });
+      expect(focus).toBeDisabled();
+      fireEvent.click(focus);
+      expect(textarea()).toHaveValue("hello");
+      finish();
+      await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
+      expect(focus).toBeEnabled();
+    },
+  );
 
   it("keeps the draft when setting effort fails", async () => {
     useChatStore.setState({ setEffort: vi.fn().mockRejectedValue(new Error("Effort failed")) });
@@ -6142,9 +6149,20 @@ describe("effort submit buttons", () => {
   });
 
   it("only offers supported quick levels", () => {
-    renderWithTooltips(<Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />);
+    const view = renderWithTooltips(
+      <Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />,
+    );
     expect(screen.queryByRole("button", { name: "Send with low effort" })).toBeNull();
     expect(screen.getByRole("button", { name: "Send with high effort" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send with xhigh effort" })).toHaveTextContent(
+      "X-high",
+    );
+    view.rerender(
+      <TooltipProvider>
+        <Composer {...composerProps({ effortLevels: ["high"] })} />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Send with xhigh effort" })).toBeNull();
   });
 });
 

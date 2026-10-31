@@ -12,7 +12,7 @@ export function EffortSubmitButtons({
 }) {
   return (
     <div className="flex shrink-0 gap-1">
-      {["low", "medium", "high"]
+      {["low", "medium", "high", "xhigh"]
         .filter((level) => levels.includes(level))
         .map((level) => (
           <Button
@@ -26,7 +26,7 @@ export function EffortSubmitButtons({
             title={`Send with ${level} effort`}
             onClick={() => onSubmit(level)}
           >
-            {level.charAt(0).toUpperCase() + level.slice(1)}
+            {level === "xhigh" ? "X-high" : level.charAt(0).toUpperCase() + level.slice(1)}
           </Button>
         ))}
     </div>
