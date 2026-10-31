@@ -467,3 +467,60 @@ async def test_parallel_design_change_takes_priority_over_clarification(coding):
     assert (await coding.evaluate(_request("/workflow answer yes"))).action == PolicyAction.DENY
     assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_first", [False, True])
+@pytest.mark.parametrize("failure_kind", ["failed", "absent"])
+async def test_parallel_failure_recovery_preserves_design_approval_request(
+    coding, db_uri, monkeypatch, failure_first, failure_kind
+):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await start(coding)
+    await explore(coding, ("simple",))
+    await present(coding)
+    await coding.evaluate(_request("/workflow designs 1 all"))
+    await prepare(coding)
+    while coding.state.get("current") != "simple/review-b-standards":
+        await finish(coding)
+    standards, spec = await coding.dispatch(), await coding.dispatch()
+    if failure_kind == "failed":
+        failed = coding.store.create_conversation(
+            title="worker:" + spec["title"],
+            parent_conversation_id=coding.session_id,
+            labels={"omnigent.subagent.dispatch_id": "failed-work"},
+        )
+        coding.store.set_session_live_status(failed.id, "failed")
+        failure = _completion(spec["title"], child_id=failed.id, status="failed")
+    else:
+        failure = output(
+            "sys_session_send", "Error: dispatch response lost", {"args": {"title": spec["title"]}}
+        )
+    if failure_first:
+        await coding.evaluate(failure)
+    await report(
+        coding,
+        standards,
+        {
+            "outcome": "NEEDS_DESIGN_APPROVAL",
+            "question": "Different storage needed",
+        },
+    )
+    if not failure_first:
+        await coding.evaluate(failure)
+    coding.store = SqlAlchemyConversationStore(db_uri)
+    await coding.evaluate(output("workflow_reconcile", {}))
+    if failure_kind == "absent":
+        assert coding.state["status"] == "blocked"
+        await coding.evaluate(_request("/workflow retry-dispatch"))
+    assert coding.state["status"] == "waiting-design-revision"
+    assert coding.state["question"] == "Different storage needed"
+    assert (
+        coding.state["incomplete"]["simple/review-b-standards"]["outcome"]
+        == "NEEDS_DESIGN_APPROVAL"
+    )
+    assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
+    assert (await coding.evaluate(_request("/workflow answer yes"))).action == PolicyAction.DENY
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow designs 1 revise Change storage"))
+    assert coding.state["current"] == "explore"
