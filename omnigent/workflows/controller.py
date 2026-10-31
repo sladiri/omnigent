@@ -13,6 +13,7 @@ from typing import Any, TypeAlias, cast
 from omnigent.policies.builtins.github import github_policy
 from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
+from omnigent.workflows import comparison
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
 STATE_KEY = "workflow_controller"
@@ -85,6 +86,8 @@ def _stage(state: Json) -> str:
 
 
 def _candidate(state: Json) -> Json:
+    if state.get("current") in comparison.ANALYSIS_STAGES:
+        return {"workspace": state["definition"]["repository"]}
     candidate_id = state.get("selected") or str(state["current"]).split("/")[0]
     return next(c for c in state["candidates"] if c["id"] == candidate_id)
 
@@ -122,6 +125,8 @@ def _advance_candidate(state: Json) -> None:
     state["findings"] = {}
     if remaining:
         _set_stage(state, remaining, "implement")
+    elif comparison.enabled(state):
+        comparison.analysis_stage(state, "compare-results")
     else:
         state.update(
             status="waiting-user" if state["verified"] else "blocked",
@@ -146,8 +151,16 @@ def _definition(raw: str, conversation_id: str) -> Json:
             raise ValueError(f"Definition needs {key}")
     if not Path(definition["repository"]).is_absolute():
         raise ValueError("Repository must be an absolute path")
-    candidates = definition.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    candidates = definition.get("candidates", [])
+    workflow = definition.setdefault(
+        "workflow",
+        comparison.NAME
+        if isinstance(candidates, list) and len(candidates) > 1
+        else "implement-review-fix",
+    )
+    if workflow not in {comparison.NAME, "implement-review-fix"}:
+        raise ValueError("Unknown workflow")
+    if not isinstance(candidates, list) or (not candidates and workflow != comparison.NAME):
         raise ValueError("Definition needs candidates")
     ids = []
     for candidate in candidates:
@@ -203,7 +216,18 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         return _deny("Workers cannot advance or reconfigure the workflow")
     data = event.get("data")
     args = data.get("arguments", {}) if isinstance(data, dict) else {}
-    workspace = Path(_candidate(state)["workspace"]).resolve()
+    stage = pending["stage"]
+    workspace = Path(_candidate({**state, "current": stage})["workspace"]).resolve()
+    if stage in comparison.ANALYSIS_STAGES:
+        if "command" in args or "cmd" in args:
+            if target not in {"sys_os_shell", "Bash", "exec_command", "shell_command"} or args.get(
+                "command", args.get("cmd")
+            ) not in _analysis_commands(workspace):
+                return _deny(
+                    "Exploration and comparison allow only the exact read commands in the brief"
+                )
+        elif target not in {"sys_os_read", "Read", "Glob", "Grep"}:
+            return _deny("Exploration and comparison cannot implement, test, or delegate")
     skill_roots = [Path.home() / parent / "skills" for parent in (".agents", ".codex", ".claude")]
     skill_paths = [
         installed.resolve()
@@ -220,7 +244,11 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
             skill_read = target in {"sys_os_read", "Read"} and any(
                 resolved.is_relative_to(root) for root in skill_paths
             )
-            if not resolved.is_relative_to(workspace) and not skill_read:
+            result_read = stage == "compare-results" and any(
+                resolved.is_relative_to(Path(candidate["workspace"]).resolve())
+                for candidate in state.get("candidates", [])
+            )
+            if not resolved.is_relative_to(workspace) and not skill_read and not result_read:
                 return _deny("Worker paths must stay in the candidate or installed skill files")
     if target in {"sys_os_write", "sys_os_edit", "Write", "Edit", "apply_patch"}:
         paths = [args.get(key) for key in ("path", "file_path", "notebook_path")]
@@ -253,7 +281,22 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     return {"result": "ALLOW"}
 
 
+def _analysis_commands(workspace: Path) -> set[str]:
+    return {
+        f"cd {shlex.quote(str(workspace))} && /usr/bin/env {command}"
+        for command in (
+            "git worktree list --porcelain",
+            "git status --short",
+            "git ls-files",
+            "rg --files",
+        )
+    }
+
+
 def _brief(state: Json) -> str:
+    if state.get("current") in comparison.ANALYSIS_STAGES:
+        commands = sorted(_analysis_commands(Path(state["definition"]["repository"]).resolve()))
+        return comparison.brief(state) + "\nAllowed read commands:\n" + "\n".join(commands)
     candidate, stage = _candidate(state), _stage(state)
     review = stage in _REVIEW
     skill = "code-review" if "-b-" in stage else "ponytail and ponytail-review"
@@ -297,6 +340,9 @@ def _brief(state: Json) -> str:
             "COMPLETE attests required checks passed. Rechecks must inspect actual revised "
             "code. Missing skills or unavailable required delegation are BLOCKED, never "
             "silently skip them.",
+            "For Compare, implement only the approved design. A materially different design "
+            "needs a new approval: stop and return outcome NEEDS_DESIGN_APPROVAL with question. "
+            "Do not treat clarification as permission to change the design.",
             f"Outstanding findings: {json.dumps(state.get('findings', {}))}",
             f"Prior evidence: {json.dumps(state['completed'])}",
             f"User answer: {state.get('answer', '')}",
@@ -466,18 +512,58 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             Json,
             copy.deepcopy(event.get("session_state", {}).get(STATE_KEY) or {"status": "idle"}),
         )
+        if state["status"] == "cancelled":
+            if phase == "tool_call" and target not in READ_TOOLS:
+                return _deny("This workflow was cancelled")
+            return _result(
+                state,
+                **(
+                    {"data": json.dumps(state)}
+                    if target == "workflow_status" and phase == "tool_result"
+                    else {}
+                ),
+            )
         if phase == "request":
             text = request_user_text(event.get("data")).strip()
+            if state["status"] == "idle":
+                for name in (comparison.NAME, "implement-review-fix"):
+                    if text.startswith(
+                        f"Prepare the start message for `{name}` using the task below."
+                    ):
+                        state["requested_workflow"] = name
+            if comparison.enabled(state):
+                if text.startswith(
+                    ("/workflow designs ", "/workflow select ", "/workflow cancel")
+                ) and (
+                    not isinstance(event.get("data"), dict) or context.get("harness") is not None
+                ):
+                    return _result(state)
+                try:
+                    if comparison.command(state, text):
+                        return _result(state)
+                except (ValueError, TypeError) as exc:
+                    return _deny(str(exc))
             if text.startswith("/workflow start "):
                 if state["status"] != "idle":
                     return _deny("This session already owns a workflow; use a new session")
                 try:
-                    definition = _definition(text.removeprefix("/workflow start "), session_id)
+                    raw = json.loads(text.removeprefix("/workflow start "))
+                    if not isinstance(raw, dict):
+                        raise ValueError("Definition must be an object")
+                    requested = state.get("requested_workflow")
+                    if requested:
+                        if raw.get("workflow", requested) != requested:
+                            raise ValueError(
+                                "Start message must use the workflow selected by the button"
+                            )
+                        raw["workflow"] = requested
+                    definition = _definition(json.dumps(raw), session_id)
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
                 state = {
                     "status": "prepare",
                     "definition": definition,
+                    "workflow_id": session_id,
                     "completed": {},
                     "verified": {},
                     "findings": {},
@@ -486,14 +572,21 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     "pending": None,
                     "question": None,
                 }
+                if comparison.enabled(state):
+                    comparison.analysis_stage(state, "explore")
             elif text.startswith("/workflow select "):
                 candidate_id = text.removeprefix("/workflow select ")
                 if (
-                    state["status"] != "waiting-user"
+                    state["status"]
+                    != ("waiting-final-selection" if comparison.enabled(state) else "waiting-user")
+                    or (comparison.enabled(state) and state.get("presented") != "results")
                     or state.get("current") is not None
                     or candidate_id not in state.get("verified", {})
                 ):
                     return _deny("Selection requires all candidate stages to pass")
+                state.setdefault("decisions", []).append(
+                    {"command": text, "revision": state.get("designs", {}).get("revision")}
+                )
                 state.update(selected=candidate_id, status="snapshot", snapshot_for="selection")
             elif text.startswith("/workflow answer "):
                 answer = text.removeprefix("/workflow answer ").strip()
@@ -506,6 +599,8 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     attempt=state["attempt"] + 1,
                     question=None,
                 )
+                if state.get("current") in comparison.ANALYSIS_STAGES:
+                    state["status"] = "ready"
             elif text == "/workflow retry-dispatch":
                 if (
                     state["status"] != "blocked"
@@ -531,6 +626,8 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     pending=None,
                     attempt=state["attempt"] + 1,
                 )
+                if state.get("current") in comparison.ANALYSIS_STAGES:
+                    state["status"] = "ready"
             elif text.startswith("/workflow reject "):
                 parts = text.removeprefix("/workflow reject ").split(" ", 1)
                 if (
@@ -539,6 +636,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     or state["status"] != "blocked"
                     or _pending(state)
                     or not state.get("current")
+                    or state.get("current") in comparison.ANALYSIS_STAGES
                     or parts[0] != _candidate(state)["id"]
                 ):
                     return _deny(
@@ -557,7 +655,9 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     and not state.get("selected")
                 ):
                     return _deny("No candidate remains; start a new workflow session")
-                if state.get("selected"):
+                if state.get("current") in comparison.ANALYSIS_STAGES:
+                    state.update(status="ready", attempt=state.get("attempt", 1) + 1)
+                elif state.get("selected"):
                     state.update(status="snapshot", snapshot_for="selection")
                 elif not state.get("candidates"):
                     state["status"] = "prepare"
@@ -570,6 +670,11 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             return _result(state)
         if phase == "tool_call":
             if target in READ_TOOLS or target == "workflow_reconcile":
+                return _result(state)
+            if target == "workflow_present" and state["status"] in {
+                "waiting-design-selection",
+                "waiting-final-selection",
+            }:
                 return _result(state)
             if target == "workflow_prepare" and state["status"] == "prepare":
                 return _result(state, data={"definition": state["definition"]})
@@ -652,7 +757,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     "agent": "worker",
                     "title": title,
                     "args": (
-                        f"/goal Stage: {current.rsplit('/', 1)[-1]}\n"
+                        f"Stage: {current}\n"
+                        "Read workflow_stage and return its report. Do not create a goal."
+                        if current in comparison.ANALYSIS_STAGES
+                        else f"/goal Stage: {current.rsplit('/', 1)[-1]}\n"
                         "Produce the final report for your assigned workflow stage. "
                         "First call workflow_stage for the complete task, worktree, checks, "
                         "and report contract. Work only on that stage. Continue until its "
@@ -667,14 +775,41 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             )
         if target == "workflow_status":
             return _result(state, data=json.dumps(state, sort_keys=True))
+        if target == "workflow_present" and state["status"] in {
+            "waiting-design-selection",
+            "waiting-final-selection",
+        }:
+            presentation = comparison.render(state)
+            state["presented"] = (
+                "designs" if state["status"] == "waiting-design-selection" else "results"
+            )
+            return _result(state, data=presentation)
         if target == "workflow_reconcile":
             return _reconcile(state, session_id)
         result = _decode(event)
         if target == "workflow_prepare" and state["status"] == "prepare":
-            if not result.get("candidates") or result.get("run_id") != session_id:
+            if (
+                not result.get("candidates")
+                or result.get("run_id") != state["definition"]["run_id"]
+            ):
                 return _block(
                     state, "Worktree preparation failed; inspect tool error before retry"
                 )
+            if comparison.enabled(state):
+                expected = {c["id"]: c["task"] for c in state["definition"]["candidates"]}
+                prepared = result["candidates"]
+                if (
+                    not isinstance(prepared, list)
+                    or len(prepared) != len(expected)
+                    or any(
+                        not isinstance(c, dict)
+                        or not isinstance(c.get("id"), str)
+                        or expected.get(c.get("id")) != c.get("task")
+                        for c in prepared
+                    )
+                    or {c["id"] for c in prepared} != set(expected)
+                ):
+                    return _block(state, "Prepared candidates differ from approved designs")
             state["candidates"] = result["candidates"]
             state["pr_template"] = result.get("pr_template", "")
             _set_stage(state, state["candidates"][0], "implement")
@@ -757,14 +892,27 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             parallel["reports"][pending["stage"]] = result
             if _pending(state) or parallel["next"]:
                 return _result(state)
+            reports = list(parallel["reports"].values())
             result = next(
-                (
-                    report
-                    for report in parallel["reports"].values()
-                    if report.get("outcome") != "COMPLETE"
+                (report for report in reports if report.get("outcome") == "NEEDS_DESIGN_APPROVAL"),
+                next(
+                    (report for report in reports if report.get("outcome") != "COMPLETE"),
+                    parallel["reports"][state["current"]],
                 ),
-                parallel["reports"][state["current"]],
             )
+        if result.get("outcome") != "COMPLETE":
+            state.setdefault("incomplete", {})[pending["stage"]] = result
+        if result.get("outcome") == "NEEDS_DESIGN_APPROVAL" and comparison.enabled(state):
+            if _pending(state):
+                return _block(
+                    state, "Stop and reconcile the remaining workers before revising designs"
+                )
+            state.update(
+                status="waiting-design-revision",
+                question=result.get("question")
+                or "Revise the design proposals before implementing a different approach",
+            )
+            return _result(state)
         if result.get("outcome") != "COMPLETE":
             state.pop("parallel", None)
             if (
@@ -777,6 +925,12 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 status="waiting-user" if result["outcome"] == "NEEDS_INPUT" else "blocked",
                 question=result["question"],
             )
+            return _result(state)
+        if state.get("current") in comparison.ANALYSIS_STAGES:
+            try:
+                comparison.accept(state, result)
+            except (ValueError, TypeError, KeyError) as exc:
+                return _block(state, f"Invalid comparison: {exc}")
             return _result(state)
         state.update(status="snapshot", snapshot_for="after", report=result)
         return _result(state)

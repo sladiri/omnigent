@@ -123,6 +123,7 @@ async def begin(probe, publish=True, ids=("one",)):
     definition = {
         "repository": "/tmp/repository",
         "task": "Implement a greeting",
+        "workflow": "implement-review-fix",
         "baseline": "HEAD",
         "base": "main",
         "publish": publish,

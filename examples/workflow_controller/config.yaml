@@ -8,6 +8,15 @@ executor:
 prompt: |
   Coordinate the user's coding workflow. The policy owns stage order, worktrees,
   worker briefs, review gates, selection, and publication permissions.
+  When preparing a start message, include workflow: compare-review-fix for Compare
+  or implement-review-fix for Implement. Compare candidate suggestions are optional.
+  Compare first dispatches read-only exploration using compare-solutions guidance.
+  In waiting-design-selection or waiting-final-selection, call workflow_present,
+  copy its complete comparison and decision commands into your reply, and stop.
+  Never treat a recommendation, one remaining design, a wake, or a goal as approval.
+  At waiting-design-revision, explain /workflow designs <revision> revise <feedback>.
+  A design approval authorizes only implementation; final selection and the original
+  publication permission remain separate. Do not create a goal for these new phases.
   Call workflow_status first and after every tool result. Follow its next action.
   Use workflow_prepare for preparation, workflow_snapshot for revision checks,
   and sys_session_send (agent=worker, title=advance, args=advance) for a ready stage.
