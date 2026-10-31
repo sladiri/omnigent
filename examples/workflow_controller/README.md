@@ -11,9 +11,23 @@ completion reports, and enforces stage order. Workers cannot advance the run or
 publish their changes. Each worker starts with its candidate worktree as the
 actual runtime working directory.
 
+Each worker starts a native Codex goal for its assigned stage report. It reads the
+full task and prior evidence through `workflow_stage`, so long briefs do not
+exceed the native goal objective limit. Codex continues work until the report is
+ready. The goal ends with an honest `COMPLETE`, `NEEDS_INPUT`, or `BLOCKED` report;
+only the controller decides whether that report passes the stage gate. A missing
+user decision stops dependent work and leaves the controller waiting for an
+answer. Answers and retries start a fresh worker goal for the same stage.
+
 ## Start a run
 
-Use this directory as an agent bundle. For example, from your Omnigent checkout:
+In the Web UI, select the installed `workflow-controller` agent. Use `implement`
+for one approach or `compare` for alternatives, then describe your task. The
+buttons prepare the workflow start message. Review and send that message to start
+the run. Worker goal mode is automatic for both workflows; no goal toggle or
+separate controller process is needed.
+
+To launch the packaged agent from a checkout instead:
 
 ```sh
 /usr/bin/env uv run --no-sync omnigent run examples/workflow_controller --server http://127.0.0.1:6767
@@ -136,7 +150,7 @@ The tests use temporary repositories, a real isolated server and runner, and a
 scripted model endpoint. They do not call a model provider or change the running
 Omnigent installation. The coding end-to-end test creates a candidate worktree,
 executes worker file tools, checks reviewer and out-of-worktree write denial,
-resumes a question after restart, completes the parallel review pairs, restarts
+reads the assigned goal brief, resumes a question after restart, completes the parallel review pairs, restarts
 the runner again, and requires selection before publication. Only
 the external publication effect is replaced in that test; operation tests cover
 Git state and mocked GitHub interactions separately.

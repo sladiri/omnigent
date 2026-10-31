@@ -187,6 +187,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     configure_mock_llm(
         mock_llm_server_url,
         [
+            _tool("workflow_stage", "question-brief"),
             {
                 "text": json.dumps(
                     {
@@ -197,9 +198,9 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                     }
                 ),
                 "block": True,
-            }
+            },
         ],
-        match="Stage: a/implement\n",
+        match="Stage: implement\n",
     )
     configure_mock_llm(
         mock_llm_server_url,
@@ -257,7 +258,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 "findings": [],
                 "resolved": [],
             }
-            child_calls = []
+            child_calls = [_tool("workflow_stage", f"{stage}-brief")]
             if stage == "implement":
                 child_calls.append(
                     _tool(
@@ -290,7 +291,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
             configure_mock_llm(
                 mock_llm_server_url,
                 [*child_calls, {"text": json.dumps(report), "block": True}],
-                match=f"Stage: a/{stage}\n",
+                match=f"Stage: {stage}\n",
             )
         wake_calls = [_tool("sys_read_inbox", f"{marker}-inbox"), snapshot(f"{marker}-after")]
         if index < len(groups) - 1:
