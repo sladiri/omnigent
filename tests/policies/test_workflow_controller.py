@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,9 +17,80 @@ from omnigent.server.routes._sessions.helpers import _build_evaluation_context
 from omnigent.spec.parser import parse
 from omnigent.spec.types import AgentSpec, Phase, PolicyAction
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
-from omnigent.workflows.controller import STAGES, STATE_KEY
+from omnigent.workflows.controller import STAGES, STATE_KEY, _worker_policy
 
 CONFIG = Path(__file__).parents[2] / "examples/workflow_controller"
+
+
+def test_native_patch_real_paths_and_candidate_shell_scope(tmp_path, monkeypatch):
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    (workspace / "src").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "escape").symlink_to(outside, target_is_directory=True)
+    pending = {"stage": "one/implement", "title": "implement", "child_id": "child"}
+    state = {
+        "status": "running",
+        "current": "one/implement",
+        "pending": pending,
+        "candidates": [{"id": "one", "workspace": str(workspace)}],
+    }
+    sessions = {
+        "root": SimpleNamespace(session_state={STATE_KEY: state}),
+        "child": SimpleNamespace(
+            id="child", parent_conversation_id="root", title="worker:implement"
+        ),
+    }
+    monkeypatch.setattr(
+        "omnigent.runtime.get_conversation_store",
+        lambda: SimpleNamespace(get_conversation=sessions.get),
+    )
+
+    def call(tool, args, cwd=workspace):
+        request = hook_payload_to_evaluation_request(
+            "PreToolUse", {"tool_name": tool, "tool_input": args, "cwd": str(cwd)}
+        )
+        event = {"type": "tool_call", "target": tool, "data": request["event"]["data"]}
+        return _worker_policy(event, "root", "child")["result"]
+
+    def patch(header):
+        return f"*** Begin Patch\n{header}\n*** End Patch"
+
+    assert (
+        call("apply_patch", patch("*** Add File: ../file.py\n+ok"), workspace / "src") == "ALLOW"
+    )
+    assert call("apply_patch", patch("*** Add File: escape/file.py\n+no")) == "DENY"
+    assert (
+        call(
+            "apply_patch",
+            patch("*** Update File: file.py\n*** Move to: escape/new.py\n@@\n-a\n+b"),
+        )
+        == "DENY"
+    )
+    assert call("apply_patch", patch(f"*** Delete File: {outside}/file.py")) == "DENY"
+    assert call("apply_patch", patch("*** Add File: file.py\n+no"), outside) == "DENY"
+    assert (
+        call(
+            "apply_patch",
+            {
+                "input": patch("*** Add File: file.py\n+no"),
+                "cwd": str(workspace),
+                "workdir": str(workspace),
+            },
+            outside,
+        )
+        == "DENY"
+    )
+    assert call("exec_command", {"cmd": "pwd", "workdir": str(workspace / "src")}) == "ALLOW"
+    assert call("exec_command", {"cmd": "cd src && pwd"}) == "ALLOW"
+    assert call("exec_command", {"cmd": f"cd {outside} && pwd"}) == "DENY"
+    assert call("exec_command", {"cmd": "git worktree add ../new"}) == "DENY"
+    assert call("exec_command", {"cmd": "rm -rf /"}) == "DENY"
+    pending["stage"] = "one/review-a"
+    assert call("apply_patch", patch("*** Add File: file.py\n+no")) == "DENY"
+    state["status"] = "waiting"
+    assert call("Read", {"file_path": str(workspace / "file.py")}) == "DENY"
 
 
 def _call(tool: str = "sys_session_send") -> EvaluationContext:
@@ -562,9 +634,9 @@ async def test_worker_enforces_identity_paths_publication_and_review_read_only(
     assert (
         await worker_call("sys_os_shell", {"command": "pwd", "cwd": "/tmp/candidate"})
     ).action == PolicyAction.ALLOW
-    # Codex hooks carry only the command; workdir is not part of tool_input.
+    # Native hooks preserve the harness cwd even when tool_input omits it.
     for command, expected in (
-        ("git status --short", PolicyAction.DENY),
+        ("git status --short", PolicyAction.ALLOW),
         ("cd /tmp/candidate && git status --short", PolicyAction.ALLOW),
     ):
         event = hook_payload_to_evaluation_request(
@@ -582,6 +654,36 @@ async def test_worker_enforces_identity_paths_publication_and_review_read_only(
             _build_evaluation_context(Phase.TOOL_CALL, event["data"], event)
         )
         assert result.action == expected
+    for patch in (
+        "*** Add File: file.py\n+hello",
+        "*** Delete File: file.py",
+        "*** Update File: file.py\n@@\n-old\n+new",
+        "*** Update File: file.py\n*** Move to: renamed.py\n@@\n-old\n+new",
+    ):
+        assert (
+            await worker_call(
+                "apply_patch",
+                {"input": f"*** Begin Patch\n{patch}\n*** End Patch", "cwd": "/tmp/candidate"},
+            )
+        ).action == PolicyAction.ALLOW
+    for patch in (
+        "*** Add File: ../outside.py\n+bad",
+        "*** Delete File: /tmp/other/file.py",
+        "*** Update File: file.py\n*** Move to: ../outside.py\n@@\n-old\n+new",
+        "*** Add File: good.py\n+good\n*** Add File: ../bad.py\n+bad",
+        "*** Add File: \n+bad",
+    ):
+        assert (
+            await worker_call("apply_patch", {"input": f"*** Begin Patch\n{patch}\n*** End Patch"})
+        ).action == PolicyAction.DENY
+    assert (
+        await worker_call("apply_patch", {"changes": [{"path": "file.py"}]})
+    ).action == PolicyAction.DENY
+    assert (await worker_call("apply_patch", {"input": "unknown"})).action == PolicyAction.DENY
+    for command in ("cd /tmp/other && pwd", "git worktree add /tmp/other"):
+        assert (
+            await worker_call("exec_command", {"cmd": command, "workdir": "/tmp/candidate"})
+        ).action == PolicyAction.DENY
     assert dispatch["args"].startswith("/goal ")
     assert len(dispatch["args"]) < 4000
     assert (await worker_call("workflow_stage", {})).action == PolicyAction.ALLOW
@@ -604,6 +706,13 @@ async def test_worker_enforces_identity_paths_publication_and_review_read_only(
     assert (
         await worker_call("sys_os_read", {"path": "/tmp/candidate/file"}, reviewer.id)
     ).action == PolicyAction.ALLOW
+    assert (
+        await worker_call(
+            "apply_patch",
+            {"input": "*** Begin Patch\n*** Add File: file.py\n+no\n*** End Patch"},
+            reviewer.id,
+        )
+    ).action == PolicyAction.DENY
     assert (
         await worker_call("sys_os_read", {"path": "/tmp/candidate/file"})
     ).action == PolicyAction.DENY

@@ -24,6 +24,9 @@ session_state round-trip layer.
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
 from omnigent.policies.builtins._shell import SHELL_TOOLS
@@ -36,6 +39,133 @@ from omnigent.spec.types import FunctionPolicySpec, FunctionRef, Phase, PolicyAc
 from tests.policies.builtins.helpers import tool_call_event as tc
 
 _HANDLER = "omnigent.policies.builtins.working_dir.block_working_dir_changes"
+
+
+@pytest.fixture
+def worktree_scope(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    git("init", "-b", "main")
+    git(
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "test base",
+    )
+    sibling = tmp_path / "repo-task"
+    git("worktree", "add", "-b", "task", str(sibling))
+    (sibling / "src").mkdir()
+    other = tmp_path / "unrelated"
+    other.mkdir()
+    (sibling / "escape").symlink_to(other, target_is_directory=True)
+    store = SimpleNamespace(get_conversation=lambda _: SimpleNamespace(workspace=str(repo)))
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: store)
+    return repo, sibling, other
+
+
+def _in_session(command, cwd=None, *, cmd=False):
+    args = {"cmd" if cmd else "command": command}
+    if cwd is not None:
+        args["workdir"] = str(cwd)
+    event = tc("exec_command", args)
+    event["context"] = {"conversation_id": "test-session"}
+    return event
+
+
+def test_registered_siblings_and_creation_allowed(worktree_scope):
+    repo, sibling, _ = worktree_scope
+    policy = block_working_dir_changes()
+    for command, cwd in (
+        ("cd ../repo-task", repo),
+        ("cd src", sibling),
+        (f"git -C {sibling} status", repo),
+        ("git worktree add -b new ../repo-new", repo),
+        (f"git -C {repo} worktree add --detach ../repo-new", sibling),
+        ("pwd", sibling / "src"),
+        (f'bash -c "cd {sibling}"', repo),
+    ):
+        assert policy(_in_session(command, cwd, cmd=True)) is None, command
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", "../repo-new"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert policy(_in_session("cd ../repo-new", repo)) is None
+
+
+def test_sibling_exception_rejects_unrelated_and_uncertain_paths(worktree_scope):
+    repo, sibling, other = worktree_scope
+    policy = block_working_dir_changes()
+    for command, cwd in (
+        (f"cd {other}", repo),
+        ("pwd", other),
+        (f"cd {sibling / 'escape'}", repo),
+        ("git worktree add ../unrelated", repo),
+        ("git worktree add -B main ../new", repo),
+        ("git worktree add --force ../new", repo),
+        ("git worktree add /elsewhere/new", repo),
+        (f"git -C {other} worktree add ../new", repo),
+        (f"git --git-dir={other}/.git worktree add ../new", repo),
+        (f"GIT_DIR={other}/.git git worktree add ../new", repo),
+        (f"git worktree remove {sibling}", repo),
+        (f"git worktree move {sibling} ../new", repo),
+        ('cd "$HOME"', repo),
+        (f"cd {sibling} && cd ../unrelated", repo),
+    ):
+        assert _action(policy(_in_session(command, cwd))) == "DENY", command
+    assert (
+        _action(
+            block_working_dir_changes(allow_sibling_worktrees=False)(_in_session(f"cd {sibling}"))
+        )
+        == "DENY"
+    )
+    assert (
+        _action(block_working_dir_changes(action="ask")(_in_session(f"cd {other}", repo))) == "ASK"
+    )
+
+
+def test_candidate_only_scope_and_missing_metadata(worktree_scope, monkeypatch):
+    repo, sibling, _ = worktree_scope
+    nested = repo / "nested"
+    nested.mkdir()
+    subprocess.run(["git", "init", str(nested)], check=True, capture_output=True)
+    assert (
+        _action(
+            block_working_dir_changes()(
+                _in_session(f"git -C {nested} worktree add ../../new", repo)
+            )
+        )
+        == "DENY"
+    )
+    policy = block_working_dir_changes(allowed_dirs=[str(repo)], allow_sibling_worktrees=False)
+    assert policy(_in_session("pwd", repo)) is None
+    assert _action(policy(_in_session("pwd", sibling))) == "DENY"
+    assert _action(policy(_in_session("git worktree add ../new", repo))) == "DENY"
+    monkeypatch.setattr(
+        "omnigent.runtime.get_conversation_store",
+        lambda: SimpleNamespace(
+            get_conversation=lambda _: SimpleNamespace(workspace="/nonexistent/repository")
+        ),
+    )
+    assert _action(block_working_dir_changes()(_in_session(f"cd {sibling}"))) == "DENY"
+    assert block_working_dir_changes()(_in_session("pwd", "/nonexistent/repository")) is None
+    assert (
+        block_working_dir_changes(allow_sibling_worktrees=False)(
+            _in_session("pwd", "/nonexistent/repository")
+        )
+        is None
+    )
 
 
 def _sh(command: str) -> PolicyEvent:

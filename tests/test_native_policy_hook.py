@@ -901,3 +901,27 @@ def test_documented_tool_response_takes_precedence() -> None:
     )
     assert result is not None
     assert result["event"]["data"]["result"] == "actual result"
+
+
+def test_native_directory_and_patch_text_reach_policy():
+    from omnigent.native.native_policy_hook import hook_payload_to_evaluation_request
+
+    payload = {
+        "tool_name": "apply_patch",
+        "cwd": "/candidate",
+        "tool_input": "*** Begin Patch\n*** Delete File: old.py\n*** End Patch",
+    }
+    for phase in ("PreToolUse", "PostToolUse"):
+        event = hook_payload_to_evaluation_request(phase, payload)["event"]
+        data = event["data"] if phase == "PreToolUse" else event["request_data"]
+        assert data["arguments"] == {"cwd": "/candidate", "input": payload["tool_input"]}
+    event = hook_payload_to_evaluation_request(
+        "PreToolUse",
+        {
+            "tool_name": "Bash",
+            "cwd": "/candidate",
+            "tool_input": {"command": "pwd", "cwd": "/explicit", "workdir": "/explicit/sub"},
+        },
+    )["event"]
+    assert event["data"]["arguments"]["cwd"] == "/explicit"
+    assert event["data"]["arguments"]["workdir"] == "/explicit/sub"

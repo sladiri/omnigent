@@ -12,6 +12,7 @@ from typing import Any, TypeAlias, cast
 
 from omnigent.policies.builtins.github import github_policy
 from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
+from omnigent.policies.builtins.working_dir import block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
 from omnigent.workflows import comparison
 
@@ -181,6 +182,30 @@ def _definition(raw: str, conversation_id: str) -> Json:
     return definition
 
 
+def _patch_paths(args: Json) -> list[str]:
+    """Extract all patch destinations, including both sides of a move."""
+    patch = args.get("input", args.get("patch"))
+    if not isinstance(patch, str):
+        raise ValueError("Missing patch text")
+    lines = patch.strip().splitlines()
+    if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        raise ValueError("Missing patch delimiters")
+    paths = []
+    for line in lines[1:-1]:
+        if line.startswith(
+            ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
+        ):
+            path = line.split(": ", 1)[1].strip()
+            if not path or "\x00" in path:
+                raise ValueError("Invalid patch path")
+            paths.append(path)
+        elif line.lstrip().startswith("***") and line != "*** End of File":
+            raise ValueError("Unknown patch header")
+    if not paths:
+        raise ValueError("No patch paths")
+    return paths
+
+
 def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyResponse:
     """Grant tools only to the recorded worker for the outstanding stage."""
     from omnigent.runtime import get_conversation_store
@@ -217,8 +242,16 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         return _deny("Workers cannot advance or reconfigure the workflow")
     data = event.get("data")
     args = data.get("arguments", {}) if isinstance(data, dict) else {}
+    if not isinstance(args, dict):
+        return _deny("Worker tool arguments must be an object")
     stage = pending["stage"]
     workspace = Path(_candidate({**state, "current": stage})["workspace"]).resolve()
+    cwd = args.get("workdir", args.get("cwd", str(workspace)))
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        return _deny("Worker workdir must be absolute")
+    directory = Path(cwd).resolve()
+    if not directory.is_relative_to(workspace):
+        return _deny("Worker workdir must stay in the candidate")
     if stage in comparison.ANALYSIS_STAGES:
         if "command" in args or "cmd" in args:
             if target not in {"sys_os_shell", "Bash", "exec_command", "shell_command"} or args.get(
@@ -251,23 +284,43 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
             )
             if not resolved.is_relative_to(workspace) and not skill_read and not result_read:
                 return _deny("Worker paths must stay in the candidate or installed skill files")
-    if target in {"sys_os_write", "sys_os_edit", "Write", "Edit", "apply_patch"}:
+    if target == "apply_patch":
+        if stage.split("/")[-1] in _REVIEW:
+            return _deny("Review stages cannot apply patches")
+        try:
+            paths = _patch_paths(args)
+            if any(not (directory / path).resolve().is_relative_to(workspace) for path in paths):
+                return _deny("Every patch path must stay in the candidate")
+        except (ValueError, OSError, RuntimeError):
+            return _deny("Cannot determine every patch path; use an explicit apply_patch patch")
+    elif target in {"sys_os_write", "sys_os_edit", "Write", "Edit"}:
         paths = [args.get(key) for key in ("path", "file_path", "notebook_path")]
-        if target == "apply_patch" or not any(
-            isinstance(path, str) and Path(path).is_absolute() for path in paths
-        ):
+        if not any(isinstance(path, str) and Path(path).is_absolute() for path in paths):
             return _deny("Use sys_os_write or sys_os_edit with an absolute candidate path")
     if "command" in args or "cmd" in args:
         cwd = args.get("workdir", args.get("cwd"))
         command = str(args.get("command", args.get("cmd", "")))
         explicit_cd = command.startswith(f"cd {shlex.quote(str(workspace))} && ")
-        if cwd != str(workspace) and not explicit_cd:
+        if not isinstance(cwd, str) and not explicit_cd:
             return _deny("Shell calls must explicitly set the candidate workdir")
-    for policy in (github_policy(),):
-        verdict = policy(event)
+    policy_event: PolicyEvent = event
+    if target in {"exec_command", "shell_command"}:
+        policy_event = {
+            **event,
+            "target": "sys_os_shell",
+            "data": {
+                "name": "sys_os_shell",
+                "arguments": {**args, "command": args.get("command", args.get("cmd", ""))},
+            },
+        }
+    for policy in (
+        github_policy(),
+        block_working_dir_changes(allowed_dirs=[str(workspace)], allow_sibling_worktrees=False),
+    ):
+        verdict = policy(policy_event)
         if verdict and verdict.get("result") != "ALLOW":
             return verdict
-    verdict = blast_radius(risky_action="DENY")(cast(Json, event), {})
+    verdict = blast_radius(risky_action="DENY")(cast(Json, policy_event), {})
     if verdict["result"] != "ALLOW":
         return cast(PolicyResponse, verdict)
     command = str(args.get("command", args.get("cmd", "")))
@@ -276,7 +329,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     ):
         return _deny("Workers cannot publish or rewrite Git history")
     if pending["stage"].split("/")[-1] in _REVIEW:
-        verdict = read_only_os()(cast(Json, event), {})
+        verdict = read_only_os()(cast(Json, policy_event), {})
         if verdict["result"] != "ALLOW":
             return cast(PolicyResponse, verdict)
     return {"result": "ALLOW"}
@@ -331,11 +384,12 @@ def _brief(state: Json) -> str:
             f"Reviewed revision: {state['revision']}",
             task,
             axes,
-            "Verify the exact worktree and branch before any command. Start every shell "
-            f"command with `cd {shlex.quote(candidate['workspace'])} &&`. "
-            "Native hooks do not preserve workdir. Follow repository instructions. "
-            "Use sys_os_write or sys_os_edit with absolute candidate paths for edits; "
-            "native apply_patch is not supported by this controller.",
+            "Verify the exact worktree and branch before any command. Use the candidate "
+            "workdir (preserved by native hooks), or start shell commands with "
+            f"`cd {shlex.quote(candidate['workspace'])} &&`. Follow repository instructions. "
+            "Use sys_os_write or sys_os_edit with absolute candidate paths, or apply_patch "
+            "with explicit patch text. Every patch path, including rename destinations, "
+            "must resolve inside this candidate. Review stages remain read-only.",
             "Do not commit, push, create a PR, deploy, or advance another workflow stage. "
             "Native delegation for independent read-only review is allowed; Omnigent session "
             "dispatch is reserved to the controller.",

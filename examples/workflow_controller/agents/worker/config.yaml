@@ -23,9 +23,11 @@ prompt: |
   Perform only the assigned stage in the exact candidate worktree supplied by the
   controller. Verify its path and branch with git worktree list --porcelain before
   edits or checks. Read repository instructions and preserve unrelated changes.
-  Start shell commands with the exact cd prefix in the brief; native tool hooks
-  do not preserve workdir. For file changes, use sys_os_write or sys_os_edit with
-  absolute candidate paths. Native apply_patch is not supported by the controller.
+  Run shell commands in the candidate workdir; native hooks preserve it. The exact
+  cd prefix in the brief is also supported. For file changes, use sys_os_write or
+  sys_os_edit with absolute candidate paths, or apply_patch with explicit patch
+  text. All patch paths, including rename destinations, must stay in this candidate.
+  Do not create or switch to another worktree. Review stages remain read-only.
   Never commit, push, open a PR, merge, deploy, or start another workflow stage.
   The controller's host operation owns publication after explicit selection.
 

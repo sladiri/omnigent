@@ -330,6 +330,16 @@ def hook_payload_to_evaluation_request(
     if isinstance(tool_name, str) and tool_name.startswith("mcp__omnigent__"):
         return None
     tool_input = payload.get("tool_input") or {}
+    if tool_name == "apply_patch" and isinstance(tool_input, str):
+        tool_input = {"input": tool_input}
+    cwd = payload.get("cwd")
+    if isinstance(tool_input, dict) and isinstance(cwd, str) and cwd:
+        # Preserve the harness directory without replacing a tool's explicit cwd.
+        tool_input = {"cwd": cwd, **tool_input}
+        if tool_name == "apply_patch":
+            # apply_patch has no directory override; only the harness cwd applies.
+            tool_input["cwd"] = cwd
+            tool_input.pop("workdir", None)
     if hook_event == _PRE_TOOL_USE:
         return {
             "event": {

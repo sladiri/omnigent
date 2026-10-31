@@ -230,9 +230,13 @@ The trusted `root_conversation_id` identifies inherited worker policy calls.
 The controller also supplies a trusted `workspace` on each named child creation.
 Omnigent binds the child's runtime and OS tools to that directory before its
 first turn. A continuation cannot change an existing child's workspace.
-Worker briefs supply an explicit `cd` prefix for native shell calls because native
-hooks omit `workdir`. Workers edit through `sys_os_write` and `sys_os_edit`;
-native `apply_patch` is not supported by this controller.
+Native hooks preserve the execution directory. Shell tools can use their candidate
+workdir, its subdirectories, or the explicit `cd` prefix in the brief. Workers can
+edit through `sys_os_write`, `sys_os_edit`, or native `apply_patch` with explicit
+patch text. The controller checks every patch path, including rename destinations,
+against the candidate after resolving relative paths and symlinks. Unrecognized
+patch input is denied. Review stages still reject edits. Workers cannot create or
+switch to sibling worktrees; the coordinator owns candidate creation.
 
 Workers run as the local user with `os_env.sandbox.type: none`, as native Codex
 does. Policy guards constrain declared paths, deny reviewer write tools, and

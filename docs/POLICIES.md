@@ -412,15 +412,18 @@ Controls Google Calendar access. Defaults to read-only.
 
 #### `block_working_dir_changes`
 
-Blocks shell commands that change the working directory (`cd`, `pushd`, `git -C`) or manage git worktrees. Parses chained and wrapped commands to prevent trivial bypasses.
+Gates shell directory changes (`cd`, `pushd`, `git -C`), explicit `cwd`/`workdir`, and Git worktree operations. By default, the session checkout and registered sibling worktrees of the same repository are allowed. Ordinary `git worktree add [-b branch] <sibling-path>` is also allowed when the destination does not exist. Move, remove, force options, and unrelated directories remain gated.
+
+The exception uses the stored session workspace and local Git metadata, never a tool-supplied directory as its authority. Without accessible metadata (for example, a remote runner), the policy keeps its strict behavior. Create a worktree in one call, then enter it in the next so registration can be checked. Use absolute paths after a directory change within a compound command; ambiguous relative paths remain gated. This shell policy is a workflow guardrail, not a sandbox for arbitrary programs. Workflow-controller workers retain their narrower candidate-only rule.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `block_cd` | boolean | `true` | Block cd/chdir/pushd/popd and git -C |
 | `block_worktree` | boolean | `true` | Block git worktree add/move/remove |
-| `allowed_dirs` | string[] | `[]` | Directories cd may move into (including subdirectories) |
+| `allowed_dirs` | string[] | `[]` | Additional directories cd may move into (including subdirectories) |
+| `allow_sibling_worktrees` | boolean | `true` | Allow the stored session checkout, registered siblings, and new sibling worktree creation; `false` restores strict directory/worktree gating |
 | `action` | string | `"deny"` | Verdict for gated commands (`deny` or `ask`) |
-| `shell_tools` | string[] | `["sys_os_shell"]` | Shell tools to parse |
+| `shell_tools` | string[] | All supported harness shell tools | Shell tools to parse (`command` or `cmd`) |
 
 ### Risk score
 
