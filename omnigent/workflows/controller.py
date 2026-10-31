@@ -16,6 +16,19 @@ from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_t
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
 STATE_KEY = "workflow_controller"
+POLICY_REGISTRY = [
+    {
+        "handler": "omnigent.workflows.controller.make_controller",
+        "kind": "factory",
+        "name": "Coding Workflow Controller",
+        "description": "Enforce implementation, review, selection, and publication gates.",
+        "params_schema": {
+            "type": "object",
+            "properties": {"max_attempts": {"type": "integer", "minimum": 1, "default": 2}},
+            "additionalProperties": False,
+        },
+    }
+]
 STAGES = (
     "implement",
     "review-a",
