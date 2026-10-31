@@ -188,9 +188,13 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         return _deny("This worker is no longer the active workflow stage")
     if state.get("status") != "running":
         return _deny("The workflow is paused")
+    target = str(event.get("target", ""))
+    if target == "workflow_stage":
+        if event.get("type") == "tool_result":
+            return {"result": "ALLOW", "data": _brief({**state, "current": pending["stage"]})}
+        return {"result": "ALLOW"}
     if event.get("type") != "tool_call":
         return {"result": "ALLOW"}
-    target = str(event.get("target", ""))
     if target.startswith("workflow_") or target in {
         "sys_session_send",
         "sys_session_create",
@@ -628,7 +632,6 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             current = paired_stage or state["current"]
             title = f"{current}/{serial}"
             pending = {"title": title, "stage": current, "agent": "worker"}
-            brief_state = {**state, "current": current}
             state.update(
                 status="running",
                 dispatch_serial=serial,
@@ -648,7 +651,17 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 data={
                     "agent": "worker",
                     "title": title,
-                    "args": _brief(brief_state),
+                    "args": (
+                        f"/goal Stage: {current.rsplit('/', 1)[-1]}\n"
+                        "Produce the final report for your assigned workflow stage. "
+                        "First call workflow_stage for the complete task, worktree, checks, "
+                        "and report contract. Work only on that stage. Continue until its "
+                        "checks are done or a user decision or external blocker prevents "
+                        "progress. Then mark this report goal complete and return the "
+                        "required JSON, using NEEDS_INPUT or BLOCKED when appropriate. "
+                        "Completing this report goal does not attest that the stage passed. "
+                        "The controller owns stage advancement and user decisions."
+                    ),
                     "workspace": _candidate(state)["workspace"],
                 },
             )

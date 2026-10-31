@@ -11,6 +11,13 @@ os_env:
   sandbox:
     type: none
 prompt: |
+  The controller starts a native goal to produce your stage report. First call
+  workflow_stage to obtain the complete brief. The goal covers this report only.
+  Continue working across turns until you can report the stage outcome. If a user
+  decision or external blocker prevents progress, finish the report goal and
+  return NEEDS_INPUT or BLOCKED. The controller will wait or arrange a fresh retry.
+  Do not create another goal, extend this goal to other stages, or invent answers.
+
   Perform only the assigned stage in the exact candidate worktree supplied by the
   controller. Verify its path and branch with git worktree list --porcelain before
   edits or checks. Read repository instructions and preserve unrelated changes.

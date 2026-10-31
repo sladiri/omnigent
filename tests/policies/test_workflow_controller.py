@@ -568,8 +568,15 @@ async def test_worker_enforces_identity_paths_publication_and_review_read_only(
             _build_evaluation_context(Phase.TOOL_CALL, event["data"], event)
         )
         assert result.action == expected
-    assert "`cd /tmp/candidate &&`" in dispatch["args"]
-    assert "sys_os_write or sys_os_edit" in dispatch["args"]
+    assert dispatch["args"].startswith("/goal ")
+    assert len(dispatch["args"]) < 4000
+    assert (await worker_call("workflow_stage", {})).action == PolicyAction.ALLOW
+    engine = build_policy_engine(
+        spec=coding.spec, conversation_id=child.id, conversation_store=coding.store
+    )
+    brief = (await engine.evaluate(output("workflow_stage", "stub"))).data
+    assert "`cd /tmp/candidate &&`" in brief
+    assert "sys_os_write or sys_os_edit" in brief
     await coding.evaluate(_completion(dispatch["title"], child_id=child.id))
     await snapshot(coding)
     await snapshot(coding)
@@ -652,3 +659,26 @@ async def test_invalid_parallel_report_cannot_leave_half_accepted_evidence(codin
     retry = await coding.dispatch()
     assert "standards" in retry["title"]
     assert coding.state["parallel"]["next"] == "one/review-b-spec"
+
+
+@pytest.mark.asyncio
+async def test_goal_brief_is_unabridged_and_bound_to_each_parallel_worker(coding, monkeypatch):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    for _ in range(4):
+        await finish(coding)
+    for axis in ("standards", "spec"):
+        dispatch = await coding.dispatch()
+        child = coding.store.create_conversation(
+            title="worker:" + dispatch["title"], parent_conversation_id=coding.session_id
+        )
+        state = coding.state
+        state["completed"]["one/implement"]["evidence"] = "long evidence " * 1000
+        coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+        engine = build_policy_engine(
+            spec=coding.spec, conversation_id=child.id, conversation_store=coding.store
+        )
+        brief = (await engine.evaluate(output("workflow_stage", "stub"))).data
+        assert f"Stage: one/review-b-{axis}\n" in brief
+        assert "long evidence " * 1000 in brief
+        assert len(dispatch["args"]) < 4000
