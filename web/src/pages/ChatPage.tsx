@@ -27,6 +27,8 @@ import {
   FileTextIcon,
   Loader2Icon,
   MessagesSquareIcon,
+  TextQuoteIcon,
+  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -4061,33 +4063,52 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-9 px-2 text-xs md:h-8"
-                title="focus"
-                disabled={
-                  disabled ||
-                  isReadOnly ||
-                  hasPendingElicitation ||
-                  composerLockedByBtw ||
-                  savingSubmitEffort
-                }
-                onClick={() => {
-                  editText(
-                    draft.quotes[0]?.id ?? null,
-                    (text) =>
-                      `We're in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.\n\n${text}`,
-                  );
-                  dirtyRef.current = true;
-                  resetCursor();
-                  if (commandError !== null) setCommandError(null);
-                  textareaRef.current?.focus();
-                }}
-              >
-                focus
-              </Button>
+              {[
+                {
+                  label: "implement",
+                  icon: WorkflowIcon,
+                  prompt:
+                    "Prepare the start message for `implement-review-fix` using the task below.",
+                },
+                {
+                  label: "compare",
+                  icon: WorkflowIcon,
+                  prompt:
+                    "Prepare the start message for `compare-review-fix` using the task below.",
+                },
+                {
+                  label: "focus",
+                  icon: TextQuoteIcon,
+                  prompt:
+                    'We\'re in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.',
+                },
+              ].map(({ label, prompt, icon: Icon }) => (
+                <Button
+                  key={label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-2 text-xs md:h-8"
+                  title={label}
+                  disabled={
+                    disabled ||
+                    isReadOnly ||
+                    hasPendingElicitation ||
+                    composerLockedByBtw ||
+                    savingSubmitEffort
+                  }
+                  onClick={() => {
+                    editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
+                    dirtyRef.current = true;
+                    resetCursor();
+                    if (commandError !== null) setCommandError(null);
+                    textareaRef.current?.focus();
+                  }}
+                >
+                  <Icon className="size-4" aria-hidden="true" />
+                  {label}
+                </Button>
+              ))}
               {showEffort &&
                 !showInterruptButton &&
                 !(costRoutingEligible && submitRoutingMode === "on") && (
