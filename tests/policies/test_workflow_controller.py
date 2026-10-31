@@ -259,12 +259,22 @@ async def test_findings_require_resolution_and_failed_recheck_loops_to_fix(codin
     await begin(coding, publish=False)
     await finish(coding)
     await finish(coding, findings=[{"id": "A-1", "message": "Missing case"}])
+    assert coding.state["status"] == "waiting-user"
+    await coding.evaluate(_request("/workflow answer Fix the reported case"))
+    await snapshot(coding)
     assert coding.state["current"] == "one/fix-a"
     await finish(coding)
     await finish(coding, findings=[{"id": "A-2", "message": "Still missing"}])
+    assert coding.state["status"] == "waiting-user"
+    await coding.evaluate(_request("/workflow answer Fix the reported case"))
+    await snapshot(coding)
     assert coding.state["current"] == "one/fix-a"
     await finish(coding)
     await finish(coding, findings=[{"id": "A-3", "message": "Still missing"}])
+    assert coding.state["status"] == "waiting-user"
+    await coding.evaluate(_request("/workflow answer Fix the reported case"))
+    await snapshot(coding)
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state["status"] == "blocked"
     assert "limit" in coding.state["question"]
 
@@ -280,6 +290,9 @@ async def test_final_b_findings_rerun_b_and_c_on_the_fixed_revision(coding):
     await finish(
         coding, findings=[{"id": "regression", "message": "C broke B"}], revision=revision
     )
+    assert coding.state["status"] == "waiting-user"
+    await coding.evaluate(_request("/workflow answer Fix the regression"))
+    await snapshot(coding, revision)
     assert coding.state["current"] == "one/fix-b"
     assert coding.state["verified"] == {}
     revision = "tree-fixed"
@@ -653,9 +666,10 @@ async def test_invalid_parallel_report_cannot_leave_half_accepted_evidence(codin
     ctx.content["result"] = json.dumps(report)
     await coding.evaluate(ctx)
     await snapshot(coding)
-    assert coding.state["status"] == "blocked"
+    assert coding.state["status"] == "waiting-user"
     assert not any(key.startswith("one/review-b-") for key in coding.state["completed"])
-    await coding.evaluate(_request("/workflow retry"))
+    assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow answer Repeat the review with valid evidence"))
     await snapshot(coding)
     retry = await coding.dispatch()
     assert "standards" in retry["title"]

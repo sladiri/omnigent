@@ -216,10 +216,12 @@ def command(state: Json, text: str) -> bool:
                         "rejected",
                         "result_comparison",
                         "incomplete",
+                        "review_wait",
                     )
                 }
             )
         )
+        state.pop("review_wait", None)
         state.update(design_feedback=" ".join(values), answer="", selected=None)
         analysis_stage(state, "explore")
         return True

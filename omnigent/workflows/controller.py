@@ -122,6 +122,7 @@ def _advance_candidate(state: Json) -> None:
         None,
     )
     state.pop("revision", None)
+    state.pop("review_wait", None)
     state["findings"] = {}
     if remaining:
         _set_stage(state, remaining, "implement")
@@ -302,12 +303,16 @@ def _brief(state: Json) -> str:
     skill = "code-review" if "-b-" in stage else "ponytail and ponytail-review"
     task = (
         f"Load installed {skill} skills. Review the full task diff and connected code, "
-        "including staged, unstaged and untracked files. Do not edit."
+        "including staged, unstaged and untracked files. Do not edit. "
+        "Report every problem, conflict, or decision for the user before any fix. "
+        "Use NEEDS_INPUT with an exact question for unresolved choices; use BLOCKED "
+        "for missing capabilities. Never resolve a user decision yourself."
         if review
         else "Implement the candidate and run its acceptance checks."
         if stage == "implement"
-        else "Fix all recorded findings and run affected checks. "
-        "Report disputed findings as BLOCKED."
+        else "Address the recorded findings according to the user's decision and run "
+        "affected checks. If the decision is unclear or conflicts with required checks, "
+        "return NEEDS_INPUT. Report disputed findings as BLOCKED."
     )
     axes = (
         f"Perform only the {stage.rsplit('-', 1)[1]} axis of the code-review skill. "
@@ -344,6 +349,7 @@ def _brief(state: Json) -> str:
             "needs a new approval: stop and return outcome NEEDS_DESIGN_APPROVAL with question. "
             "Do not treat clarification as permission to change the design.",
             f"Outstanding findings: {json.dumps(state.get('findings', {}))}",
+            f"Incomplete evidence: {json.dumps(state.get('incomplete', {}))}",
             f"Prior evidence: {json.dumps(state['completed'])}",
             f"User answer: {state.get('answer', '')}",
         ]
@@ -366,7 +372,7 @@ def _findings(report: Json) -> dict[str, str]:
     return result
 
 
-def _accept_snapshot(state: Json, snapshot: Json, max_attempts: int) -> PolicyResponse:
+def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
     if not isinstance(snapshot.get("revision"), str) or not snapshot["revision"]:
         return _block(state, "Snapshot failed; retry the snapshot before continuing")
     candidate, stage = _candidate(state), _stage(state)
@@ -422,12 +428,10 @@ def _accept_snapshot(state: Json, snapshot: Json, max_attempts: int) -> PolicyRe
         return _block(state, "Fix did not account for every outstanding finding")
     if stage in _REVIEW:
         state["findings"] = findings
-    if findings and stage.startswith(("verify-", "final-")) and not stage.endswith("standards"):
+    if findings:
         fix = "fix-b" if "-b-" in stage else "fix-" + stage[-1]
-        count = state["fix_attempts"].get(candidate["id"] + "/" + fix, 0)
-        if count >= max_attempts:
-            return _block(state, "Review fix attempt limit reached")
-        _set_stage(state, candidate, fix)
+        reports = parallel["reports"] if parallel else {state["current"]: report}
+        _wait_for_review(state, reports, next_stage=fix)
         return _result(state)
     if stage == "final-b-spec":
         state["verified"][candidate["id"]] = state["revision"]
@@ -438,17 +442,49 @@ def _accept_snapshot(state: Json, snapshot: Json, max_attempts: int) -> PolicyRe
     return _result(state)
 
 
+def _wait_for_review(state: Json, reports: Json, *, next_stage: str | None = None) -> bool:
+    issues = {
+        key: report
+        for key, report in reports.items()
+        if key.split("/")[-1] in _REVIEW
+        and (report.get("outcome") != "COMPLETE" or report.get("findings"))
+    }
+    if not issues:
+        return False
+    details = []
+    for key, report in issues.items():
+        details.append(f"{key}: {report.get('evidence', '')}")
+        if report.get("question"):
+            details.append(str(report["question"]))
+        try:
+            findings = _findings(report)
+        except ValueError:
+            findings = {}
+        details.extend(f"{identifier}: {message}" for identifier, message in findings.items())
+    design_change = comparison.enabled(state) and any(
+        report.get("outcome") == "NEEDS_DESIGN_APPROVAL" for report in issues.values()
+    )
+    command = (
+        f"/workflow designs {state['designs']['revision']} revise <feedback>"
+        if design_change
+        else "/workflow answer <decision and instructions>"
+    )
+    state.update(
+        status="waiting-design-revision" if design_change else "waiting-user",
+        review_wait={"reports": issues, "next_stage": next_stage},
+        question="\n".join(details) + f"\nReview stopped. Send {command}.",
+    )
+    return True
+
+
 def _retire_dispatches(state: Json) -> bool:
-    """Clear stopped dispatches while preserving any required design decision."""
+    """Clear stopped dispatches without discarding required user decisions."""
     state["pending"] = None
     parallel = state.pop("parallel", {})
-    for report in parallel.get("reports", {}).values():
-        if comparison.enabled(state) and report.get("outcome") == "NEEDS_DESIGN_APPROVAL":
-            state.update(
-                status="waiting-design-revision",
-                question=report.get("question") or "Revise the design proposals before retrying",
-            )
-            return True
+    reports = parallel.get("reports", {})
+    if _wait_for_review(state, reports):
+        state.setdefault("incomplete", {}).update(reports)
+        return True
     return False
 
 
@@ -603,6 +639,15 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 answer = text.removeprefix("/workflow answer ").strip()
                 if state["status"] != "waiting-user" or not state.get("current") or not answer:
                     return _deny("No stage is waiting for this answer")
+                review_wait = state.pop("review_wait", {})
+                state.setdefault("decisions", []).append(
+                    {
+                        "command": text,
+                        "stage": state["current"],
+                        "revision": state.get("revision"),
+                        "review": review_wait,
+                    }
+                )
                 state.update(
                     answer=answer,
                     status="snapshot",
@@ -610,6 +655,8 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     attempt=state["attempt"] + 1,
                     question=None,
                 )
+                if review_wait.get("next_stage"):
+                    _set_stage(state, _candidate(state), review_wait["next_stage"])
                 if state.get("current") in comparison.ANALYSIS_STAGES:
                     state["status"] = "ready"
             elif text == "/workflow retry-dispatch":
@@ -644,7 +691,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 if (
                     len(parts) != 2
                     or not parts[1].strip()
-                    or state["status"] != "blocked"
+                    or not (
+                        state["status"] == "blocked"
+                        or (state["status"] == "waiting-user" and state.get("review_wait"))
+                    )
                     or _pending(state)
                     or not state.get("current")
                     or state.get("current") in comparison.ANALYSIS_STAGES
@@ -827,7 +877,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             return _result(state)
         if target == "workflow_snapshot" and state["status"] == "snapshot":
             try:
-                return _accept_snapshot(state, result, max_attempts)
+                return _accept_snapshot(state, result)
             except (ValueError, TypeError, KeyError) as exc:
                 return _block(state, f"Invalid stage evidence: {exc}")
         if target == "workflow_publish" and state["status"] == "publish":
@@ -900,19 +950,28 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 result.update(outcome="BLOCKED", question=f"Invalid stage evidence: {exc}")
         if result.get("outcome") != "COMPLETE":
             state.setdefault("incomplete", {})[pending["stage"]] = result
+        reports = {pending["stage"]: result}
         parallel = state.get("parallel")
         if parallel:
             parallel["reports"][pending["stage"]] = result
             if _pending(state) or parallel["next"]:
                 return _result(state)
-            reports = list(parallel["reports"].values())
+            reports = parallel["reports"]
             result = next(
-                (report for report in reports if report.get("outcome") == "NEEDS_DESIGN_APPROVAL"),
+                (
+                    report
+                    for report in reports.values()
+                    if report.get("outcome") == "NEEDS_DESIGN_APPROVAL"
+                ),
                 next(
-                    (report for report in reports if report.get("outcome") != "COMPLETE"),
+                    (report for report in reports.values() if report.get("outcome") != "COMPLETE"),
                     parallel["reports"][state["current"]],
                 ),
             )
+        if result.get("outcome") != "COMPLETE" and _wait_for_review(state, reports):
+            state.pop("parallel", None)
+            state.setdefault("incomplete", {}).update(reports)
+            return _result(state)
         if result.get("outcome") == "NEEDS_DESIGN_APPROVAL" and comparison.enabled(state):
             if _pending(state):
                 return _block(
