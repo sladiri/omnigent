@@ -86,6 +86,24 @@ def test_prepare_recovers_owned_worktrees_and_preserves_candidate_changes(
         operations.workflow_prepare({**definition, "task": "Something else"})
 
 
+def test_revised_design_uses_a_new_worktree_and_preserves_prior_work(repository: Path) -> None:
+    definition = _definition(repository)
+    first = {**definition, "run_id": "a" * 32 + "-designs-1"}
+    second = {**definition, "run_id": "a" * 32 + "-designs-2"}
+    before = json.loads(operations.workflow_prepare(first))
+    prior = Path(before["candidates"][0]["workspace"])
+    (prior / "hello.txt").write_text("prior design work\n")
+    after = json.loads(operations.workflow_prepare(second))
+    assert {c["workspace"] for c in before["candidates"]}.isdisjoint(
+        c["workspace"] for c in after["candidates"]
+    )
+    assert (prior / "hello.txt").read_text() == "prior design work\n"
+    assert all(
+        (Path(c["workspace"]) / "hello.txt").read_text() == "hello\n" for c in after["candidates"]
+    )
+    assert json.loads(operations.workflow_prepare(second)) == after
+
+
 def test_prepare_refuses_dirty_baseline_and_unowned_branch(repository: Path) -> None:
     definition = _definition(repository)
     (repository / "hello.txt").write_text("unrelated user work")

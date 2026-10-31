@@ -683,3 +683,43 @@ async def test_goal_brief_is_unabridged_and_bound_to_each_parallel_worker(coding
         assert f"Stage: one/review-b-{axis}\n" in brief
         assert "long evidence " * 1000 in brief
         assert len(dispatch["args"]) < 4000
+
+
+@pytest.mark.asyncio
+async def test_native_request_echo_cannot_execute_or_repeat_workflow_commands(coding):
+    async def native(text):
+        event = hook_payload_to_evaluation_request("UserPromptSubmit", {"prompt": text})["event"]
+        event["context"]["harness"] = "codex-native"
+        before = coding.state
+        verdict = await coding.evaluate(
+            _build_evaluation_context(Phase.REQUEST, event["data"], event)
+        )
+        assert verdict.action == PolicyAction.ALLOW
+        assert coding.state == before
+
+    await coding.evaluate(_call("workflow_status"))
+    definition = {
+        "repository": "/tmp/repository",
+        "task": "Greeting",
+        "baseline": "HEAD",
+        "base": "main",
+        "candidates": [{"id": "one", "task": "Use a function"}],
+    }
+    command = "/workflow start " + json.dumps(definition)
+    await native(command)
+    await coding.evaluate(_request(command))
+    await native(command)
+
+    # A fresh probe exercises a user answer and final selection with real stage transitions.
+    coding.session_id = coding.store.create_conversation().id
+    await begin(coding)
+    await finish(coding, outcome="NEEDS_INPUT")
+    await native("/workflow answer English")
+    await coding.evaluate(_request("/workflow answer English"))
+    await native("/workflow answer English")
+    await snapshot(coding)
+    while coding.state.get("current") is not None:
+        await finish(coding)
+    await native("/workflow select one")
+    await coding.evaluate(_request("/workflow select one"))
+    await native("/workflow select one")

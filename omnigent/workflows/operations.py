@@ -174,8 +174,7 @@ def workflow_prepare(definition: dict[str, Any]) -> str:
                     Path(
                         candidate.get(
                             "workspace",
-                            repository.parent
-                            / f"{repository.name}-{run_id[:12]}-{candidate['id']}",
+                            repository.parent / f"{repository.name}-{run_id}-{candidate['id']}",
                         )
                     )
                     .expanduser()

@@ -438,6 +438,20 @@ def _accept_snapshot(state: Json, snapshot: Json, max_attempts: int) -> PolicyRe
     return _result(state)
 
 
+def _retire_dispatches(state: Json) -> bool:
+    """Clear stopped dispatches while preserving any required design decision."""
+    state["pending"] = None
+    parallel = state.pop("parallel", {})
+    for report in parallel.get("reports", {}).values():
+        if comparison.enabled(state) and report.get("outcome") == "NEEDS_DESIGN_APPROVAL":
+            state.update(
+                status="waiting-design-revision",
+                question=report.get("question") or "Revise the design proposals before retrying",
+            )
+            return True
+    return False
+
+
 def _reconcile(state: Json, root_id: str) -> PolicyResponse:
     from omnigent.runtime import get_conversation_store
 
@@ -476,8 +490,8 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
         else:
             pending["reconciled_absent"] = True
     if all(item.get("stopped") for item in outstanding):
-        state["pending"] = None
-        state.pop("parallel", None)
+        if _retire_dispatches(state):
+            return _result(state)
         return _block(state, "Persisted child failure confirmed; inspect evidence then retry")
     if any(
         item.get("reconciled_absent") or item.get("reconciled_unstarted") for item in outstanding
@@ -524,6 +538,9 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 ),
             )
         if phase == "request":
+            # Only the server's user-message gate may apply decisions; native hooks echo it.
+            if not isinstance(event.get("data"), dict) or context.get("harness") is not None:
+                return {"result": "ALLOW"}
             text = request_user_text(event.get("data")).strip()
             if state["status"] == "idle":
                 for name in (comparison.NAME, "implement-review-fix"):
@@ -532,12 +549,6 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     ):
                         state["requested_workflow"] = name
             if comparison.enabled(state):
-                if text.startswith(
-                    ("/workflow designs ", "/workflow select ", "/workflow cancel")
-                ) and (
-                    not isinstance(event.get("data"), dict) or context.get("harness") is not None
-                ):
-                    return _result(state)
                 try:
                     if comparison.command(state, text):
                         return _result(state)
@@ -614,16 +625,16 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                         "Reconcile the uncertain dispatch before authorizing a new attempt"
                     )
                 _reconcile(state, session_id)
-                if not all(
+                if not _pending(state) or not all(
                     item.get("reconciled_absent") or item.get("reconciled_unstarted")
                     for item in _pending(state)
                 ):
                     return _result(state)
-                state.pop("parallel", None)
+                if _retire_dispatches(state):
+                    return _result(state)
                 state.update(
                     status="snapshot",
                     snapshot_for="before",
-                    pending=None,
                     attempt=state["attempt"] + 1,
                 )
                 if state.get("current") in comparison.ANALYSIS_STAGES:
@@ -887,6 +898,8 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     raise ValueError("Resolved findings must be a list of IDs")
             except ValueError as exc:
                 result.update(outcome="BLOCKED", question=f"Invalid stage evidence: {exc}")
+        if result.get("outcome") != "COMPLETE":
+            state.setdefault("incomplete", {})[pending["stage"]] = result
         parallel = state.get("parallel")
         if parallel:
             parallel["reports"][pending["stage"]] = result
@@ -900,8 +913,6 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     parallel["reports"][state["current"]],
                 ),
             )
-        if result.get("outcome") != "COMPLETE":
-            state.setdefault("incomplete", {})[pending["stage"]] = result
         if result.get("outcome") == "NEEDS_DESIGN_APPROVAL" and comparison.enabled(state):
             if _pending(state):
                 return _block(
