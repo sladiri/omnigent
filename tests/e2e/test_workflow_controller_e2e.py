@@ -94,7 +94,9 @@ def _mock_bundle(destination: Path, child_model: str, mock_base: str) -> Path:
 
 
 @pytest.mark.timeout(360)
+@pytest.mark.parametrize("compare", [False, True], ids=["implement", "compare"])
 def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
+    compare: bool,
     http_client: httpx.Client,
     live_runner_id: str,
     mock_llm_server_url: str,
@@ -161,6 +163,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         return _tool("workflow_snapshot", call_id, {"workspace": "/ignored-by-policy"})
 
     definition = {
+        "workflow": "compare-review-fix" if compare else "implement-review-fix",
         "repository": str(repository),
         "task": "Replace before with hello in greeting.txt.",
         "baseline": "HEAD",
@@ -169,8 +172,120 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         "publish": True,
         "worktree_setup": False,
     }
+    start_message = "/workflow start " + json.dumps(definition)
+    if compare:
+        from tests.policies.test_workflow_comparison import design_report
+
+        parent_turn(
+            start_message, [_tool("workflow_status", "exploration-ready")], "EXPLORE_READY"
+        )
+
+        def proposal_round(revision):
+            report = {
+                "stage": "explore",
+                "outcome": "COMPLETE",
+                "evidence": "Read the original greeting.",
+                "findings": [],
+                "resolved": [],
+                **design_report(("a", "b")),
+            }
+            configure_mock_llm(
+                mock_llm_server_url,
+                [
+                    _tool("workflow_stage", f"explore-brief-{revision}"),
+                    _tool(
+                        "sys_os_write",
+                        f"explore-write-{revision}",
+                        {"path": str(repository / "greeting.txt"), "content": "too early"},
+                    ),
+                    _tool(
+                        "sys_os_read",
+                        f"explore-read-{revision}",
+                        {"path": str(repository / "greeting.txt")},
+                    ),
+                    {"text": json.dumps(report), "block": True},
+                ],
+                match="Stage: explore\n",
+            )
+            configure_mock_llm(
+                mock_llm_server_url,
+                [
+                    _tool("workflow_prepare", f"premature-prepare-{revision}", {"definition": {}}),
+                    _tool("sys_session_send", f"explore-send-{revision}"),
+                    {"text": f"EXPLORING_{revision}"},
+                    _tool("sys_read_inbox", f"explore-inbox-{revision}"),
+                    _tool("workflow_present", f"design-presentation-{revision}"),
+                    _tool("workflow_status", f"design-status-{revision}"),
+                    {"text": f"DESIGNS_WAITING_{revision}"},
+                ],
+                key=parent_model,
+            )
+            send_user_message_to_session(
+                http_client, session_id=session_id, content="Explore the designs."
+            )
+            _wait_for_text(http_client, session_id, f"EXPLORING_{revision}")
+            _release_worker(mock_llm_server_url)
+            items = _wait_for_text(http_client, session_id, f"DESIGNS_WAITING_{revision}")
+            assert (
+                _status(items, f"design-status-{revision}")["status"] == "waiting-design-selection"
+            )
+            presentation = next(
+                i["output"]
+                for i in items
+                if i.get("call_id") == f"design-presentation-{revision}"
+                and i.get("type") == "function_call_output"
+            )
+            assert (
+                "Expected tradeoffs only" in presentation
+                and "Expected risks for a" in presentation
+            )
+            assert (repository / "greeting.txt").read_text() == "before\n"
+            trees = subprocess.check_output(
+                ["/usr/bin/env", "git", "worktree", "list", "--porcelain"],
+                cwd=repository,
+                text=True,
+            )
+            assert trees.count("worktree ") == 1
+            child_id = _status(items, f"explore-send-{revision}")["conversation_id"]
+            child_items = http_client.get(
+                f"/v1/sessions/{child_id}/items", params={"limit": 1000}
+            ).json()["data"]
+            write = next(
+                i["output"]
+                for i in child_items
+                if i.get("type") == "function_call_output"
+                and i.get("call_id") == f"explore-write-{revision}"
+            )
+            assert "denied" in write.lower()
+            return items
+
+        proposal_round(1)
+        restart_live_runner()
+        items = parent_turn(
+            "Continue if you think it is best.",
+            [
+                _tool("workflow_prepare", "unapproved-prepare", {"definition": {}}),
+                _tool("sys_session_send", "unapproved-send"),
+                _tool("workflow_status", "unapproved-status"),
+            ],
+            "WAIT_RESTORED",
+        )
+        assert _status(items, "unapproved-status")["status"] == "waiting-design-selection"
+        parent_turn(
+            "/workflow designs 1 revise Clarify maintenance costs",
+            [_tool("workflow_status", "revision-status")],
+            "REVISION_READY",
+        )
+        proposal_round(2)
+        parent_turn(
+            "/workflow designs 2 reject b",
+            [_tool("workflow_present", "rejected-presentation")],
+            "B_REJECTED",
+        )
+        start_message = "/workflow designs 2 select a"
+
     items = parent_turn(
-        "/workflow start " + json.dumps(definition),
+        start_message,
         [
             _tool("workflow_prepare", "prepare", {"definition": {}}),
             snapshot("initial-snapshot"),
@@ -183,6 +298,13 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     candidate = state["candidates"][0]
     workspace = Path(candidate["workspace"])
     assert workspace != repository and (workspace / "greeting.txt").read_text() == "before\n"
+    if compare:
+        assert [c["id"] for c in state["candidates"]] == ["a"]
+        assert state["designs"]["approved"] == ["a"]
+        trees = subprocess.check_output(
+            ["/usr/bin/env", "git", "worktree", "list", "--porcelain"], cwd=repository, text=True
+        )
+        assert trees.count("worktree ") == 2
 
     configure_mock_llm(
         mock_llm_server_url,
@@ -364,7 +486,72 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         assert (repository / "greeting.txt").read_text() == "before\n"
         assert not publication_record.exists()
 
-    assert state["status"] == "waiting-user" and state["selected"] is None
+    if compare:
+        assert state["status"] == "ready" and state["current"] == "compare-results"
+        results = {
+            "stage": "compare-results",
+            "outcome": "COMPLETE",
+            "evidence": "Compared stored test and review results.",
+            "findings": [],
+            "resolved": [],
+            "results": [
+                {
+                    "id": "a",
+                    "behavior": "Greeting is hello",
+                    "tradeoffs": "Small direct change",
+                    "limitations": "English only",
+                    "evidence": ["a/implement", "a/final-b-standards", "a/final-b-spec"],
+                },
+                {
+                    "id": "b",
+                    "behavior": "Not implemented",
+                    "tradeoffs": "Unmeasured",
+                    "limitations": "Rejected before implementation",
+                    "evidence": [],
+                },
+            ],
+            "recommendation": {
+                "id": "a",
+                "reasons": "Verified greeting and required reviews passed.",
+            },
+        }
+        configure_mock_llm(
+            mock_llm_server_url,
+            [
+                _tool("workflow_stage", "results-brief"),
+                {"text": json.dumps(results), "block": True},
+            ],
+            match="Stage: compare-results\n",
+        )
+        configure_mock_llm(
+            mock_llm_server_url,
+            [
+                _tool("sys_session_send", "results-send"),
+                {"text": "COMPARING_RESULTS"},
+                _tool("sys_read_inbox", "results-inbox"),
+                _tool("workflow_present", "results-presentation"),
+                _tool("workflow_status", "results-status"),
+                {"text": "RESULTS_WAITING"},
+            ],
+            key=parent_model,
+        )
+        send_user_message_to_session(
+            http_client, session_id=session_id, content="Compare the measured results."
+        )
+        _wait_for_text(http_client, session_id, "COMPARING_RESULTS")
+        _release_worker(mock_llm_server_url)
+        items = _wait_for_text(http_client, session_id, "RESULTS_WAITING")
+        state = _status(items, "results-status")
+        presentation = next(
+            i["output"]
+            for i in items
+            if i.get("call_id") == "results-presentation"
+            and i.get("type") == "function_call_output"
+        )
+        assert "Recorded evidence:" in presentation and "English only" in presentation
+        assert "Rejected by user before implementation" in presentation
+    assert state["status"] == ("waiting-final-selection" if compare else "waiting-user")
+    assert state["selected"] is None
     assert set(state["completed"]) == {f"a/{stage}" for stage in stages}
     restart_live_runner()
     publish_args = {
@@ -400,3 +587,101 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     assert published["workspace"] == str(workspace)
     assert published["revision"] == complete["verified"]["a"]
     assert published["base"] == "main"
+
+
+@pytest.mark.timeout(120)
+def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
+    """Restart the real server and reload the gate from its existing database."""
+    from omnigent.cli import _bundle
+    from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+    from tests._helpers.server_runner import server_runner
+    from tests._helpers.session import post_session_bundle
+    from tests.policies.test_workflow_comparison import design_report
+
+    root = Path(__file__).resolve().parents[2]
+    bundle = _mock_bundle(tmp_path / "restart-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    with server_runner(tmp_path / "stack", server_cwd=root) as stack:
+        with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
+            created = post_session_bundle(
+                client.post,
+                "/v1/sessions",
+                _bundle(bundle),
+                headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+            )
+            created.raise_for_status()
+            session_id = created.json()["session_id"]
+
+            def evaluate(phase, data, request_data=None):
+                response = client.post(
+                    f"/v1/sessions/{session_id}/policies/evaluate",
+                    json={
+                        "event": {
+                            "type": phase,
+                            "target": "",
+                            "data": data,
+                            "context": {},
+                            "request_data": request_data,
+                        },
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+
+            definition = {
+                "workflow": "compare-review-fix",
+                "repository": str(tmp_path),
+                "task": "Compare designs",
+                "baseline": "HEAD",
+                "base": "main",
+            }
+            evaluate("PHASE_REQUEST", {"text": "/workflow start " + json.dumps(definition)})
+            dispatched = evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})
+            assert "data" in dispatched, dispatched
+            dispatch = dispatched["data"]
+            evaluate(
+                "PHASE_TOOL_RESULT",
+                {
+                    "result": json.dumps(
+                        {
+                            "stage": "explore",
+                            "outcome": "COMPLETE",
+                            "evidence": "Read code",
+                            "findings": [],
+                            "resolved": [],
+                            **design_report(),
+                        }
+                    )
+                },
+                {
+                    "name": "sys_session_send",
+                    "args": {
+                        "title": dispatch["title"],
+                        "agent": "worker",
+                        "conversation_id": "http-worker",
+                    },
+                    "subagent": {"status": "completed", "work_id": "http-explore"},
+                },
+            )
+            presentation = evaluate(
+                "PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_present"}
+            )
+            assert "Design proposals" in presentation["data"]
+            stack.restart_server()
+            status = evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})
+            state = json.loads(status["data"])
+            assert state["status"] == "waiting-design-selection"
+            assert state["designs"]["revision"] == 1
+            denied = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
+            assert denied["result"] == "POLICY_ACTION_DENY"
+            evaluate("PHASE_REQUEST", {"text": "/workflow designs 1 select simple"})
+            allowed = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
+            assert allowed["result"] == "POLICY_ACTION_ALLOW"
+            assert [c["id"] for c in allowed["data"]["definition"]["candidates"]] == ["simple"]
+            stack.restart_server()
+            status = evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})
+            state = json.loads(status["data"])
+            assert state["status"] == "prepare"
+            assert state["designs"]["approved"] == ["simple"]
+            assert (
+                state["designs"]["decisions"][-1]["command"] == "/workflow designs 1 select simple"
+            )

@@ -2,7 +2,10 @@
 
 This custom agent implements candidates in separate Git worktrees, runs three
 review/fix passes, waits for your selection, then publishes only the selected
-result. The controller is a packaged Python policy in `omnigent.workflows`.
+result. Compare first explores designs without implementation and waits for your
+approval. After implementation, it presents a second comparison from recorded
+results and waits for a separate final selection. The controller is a packaged
+Python policy in `omnigent.workflows`.
 Omnigent supplies sessions, durable policy state, child events, and recovery.
 
 The coordinator explains progress and calls the next permitted tool. The policy
@@ -11,21 +14,48 @@ completion reports, and enforces stage order. Workers cannot advance the run or
 publish their changes. Each worker starts with its candidate worktree as the
 actual runtime working directory.
 
-Each worker starts a native Codex goal for its assigned stage report. It reads the
-full task and prior evidence through `workflow_stage`, so long briefs do not
-exceed the native goal objective limit. Codex continues work until the report is
+Existing implementation, review, and fix workers start a native Codex goal for
+their assigned stage report. Exploration and result comparison do not start goals.
+Each worker reads the full task and prior evidence through `workflow_stage`, so
+long briefs do not exceed the native goal objective limit. Codex continues work until the report is
 ready. The goal ends with an honest `COMPLETE`, `NEEDS_INPUT`, or `BLOCKED` report;
 only the controller decides whether that report passes the stage gate. A missing
 user decision stops dependent work and leaves the controller waiting for an
-answer. Answers and retries start a fresh worker goal for the same stage.
+answer. Answers and retries start a fresh worker for the same stage.
 
 ## Start a run
 
 In the Web UI, select the installed `workflow-controller` agent. Use `implement`
 for one approach or `compare` for alternatives, then describe your task. The
 buttons prepare the workflow start message. Review and send that message to start
-the run. Worker goal mode is automatic for both workflows; no goal toggle or
-separate controller process is needed.
+the run. No separate controller process is needed.
+
+For Compare, the coordinator shows stable design IDs, expected benefits and
+disadvantages, complexity, maintenance cost, risks, assumptions, open questions,
+and a reasoned recommendation. These are expectations, not implementation results.
+There is no fixed candidate count. Even one design needs your explicit approval.
+
+Use the revision number shown in the comparison. For revision 1:
+
+- `/workflow designs 1 all` approves every remaining design for implementation.
+- `/workflow designs 1 select simple cache` approves only those IDs.
+- `/workflow designs 1 reject cache` rejects that proposal without starting work.
+- `/workflow designs 1 revise Avoid a new dependency` requests revised proposals.
+- `/workflow cancel` cancels at a stopped decision gate and preserves the record.
+
+After a rejection, the coordinator presents the remaining choices again. A
+revision creates a new approval number; old approvals cannot authorize it. A
+material design change discovered during implementation stops that candidate for
+new proposals and approval. `/workflow answer` cannot approve a design change.
+Only approved designs receive isolated worktrees and the existing review stages.
+Earlier proposal rounds, decisions, evidence, and worktrees remain available.
+
+When implementation and review finish, the coordinator presents actual behavior,
+recorded test and review evidence, tradeoffs, limitations, rejected or unsuccessful
+candidates, and a recommendation. Send `/workflow select simple` only after this
+second comparison to make the final choice. Implementation approval is not final
+selection and does not add publication permission. Ordinary messages, runtime
+wakes, goal continuations, and elapsed time never approve either gate.
 
 To launch the packaged agent from a checkout instead:
 
@@ -37,17 +67,22 @@ The default coordinator and worker harness is `codex-native`. Configure that
 harness normally before launching. The server and local runner must both use an
 Omnigent installation containing `omnigent.workflows`.
 
-Send one command with a JSON definition. Replace the repository, task, and
-candidate descriptions with the actual work. The repository must be clean so
+The coordinator prepares the start command for you. For direct API/CLI use,
+send a JSON definition with the repository and task. The repository must be clean so
 candidate ownership is unambiguous. `baseline` fixes the comparison starting
 point; `base` is the intended PR target branch.
 
 ```text
-/workflow start {"repository":"/absolute/path/to/repository","task":"Implement the requested behavior and run its acceptance checks.","baseline":"main","base":"main","candidates":[{"id":"simple","task":"Use the simplest existing helper."},{"id":"alternative","task":"Implement the agreed alternative."}],"publish":true}
+/workflow start {"workflow":"compare-review-fix","repository":"/absolute/path/to/repository","task":"Implement the requested behavior and run its acceptance checks.","baseline":"main","base":"main","candidates":[{"id":"simple","task":"Use the simplest existing helper."},{"id":"alternative","task":"Implement the agreed alternative."}],"publish":true}
 ```
 
-Use a single candidate when the implementation approach is already clear. The
-controller still requires explicit selection before publication. `publish: true`
+For Compare, `candidates` are optional initial suggestions, never approval.
+Use `workflow: implement-review-fix` with a candidate when the implementation
+approach is already clear. It retains the existing review and selection behavior.
+The Compare button records its workflow choice so a prepared start message cannot
+silently downgrade it to Implement. Direct definitions with multiple candidates
+and no workflow name also select Compare. New Compare runs use these gates;
+already-running workflows retain their saved workflow kind. `publish: true`
 authorizes the final signed commit, branch push, and PR creation after selection.
 Use `publish: false` to stop with the selected reviewed worktree. Starting a run
 does not authorize merging or deployment.
@@ -55,7 +90,8 @@ does not authorize merging or deployment.
 Preparation creates dedicated candidate branches and worktrees. It records
 ownership under the repository's common Git directory in `omnigent-workflows/`.
 It reuses worktrees already owned by the same run and preserves other worktrees.
-Candidate entries can specify `branch` and `workspace` before the run begins.
+Implement candidate entries can specify `branch` and `workspace` before the run
+begins. Compare derives owned paths from the approved proposal revision.
 Existing unrelated branches or paths are refused rather than taken over.
 
 If `~/bin/setup-worktree.py` exists, preparation invokes it for the candidate
@@ -105,7 +141,7 @@ To abandon a blocked candidate, send `/workflow reject <id> <reason>`. The
 controller preserves its worktree and advances to the next candidate. Rejected
 candidates cannot be selected.
 
-After all candidates pass, compare their evidence and send an exact selection:
+After the result comparison is presented, send an exact final selection:
 
 ```text
 /workflow select simple
@@ -115,8 +151,10 @@ The other candidate worktrees remain available. The controller does not copy the
 selected files into the original checkout.
 
 Resume the original coordinator session after interruption. `workflow_status`
-reads its durable state. Failed or cancelled workers can be retried after their
-terminal event and stopped state are confirmed. `workflow_reconcile` looks for the child belonging to an
+reads its durable state, including proposals, approval decisions, and both waits.
+`workflow_present` renders the saved comparison again after reconnect. Failed or
+cancelled workers can be retried after their terminal event and stopped state are
+confirmed. `workflow_reconcile` looks for the child belonging to an
 uncertain dispatch before another send is allowed. A recovered child is observed
 through its existing inbox; it is not dispatched again. If no child exists,
 inspect and stop any old in-flight dispatch before explicitly authorizing
@@ -143,15 +181,21 @@ must be answered through their native UI.
 Run in the repository's development environment:
 
 ```sh
-/usr/bin/env uv run --no-sync pytest tests/policies/test_workflow_controller.py tests/tools/test_workflow_operations.py tests/e2e/test_workflow_controller_e2e.py -v
+/usr/bin/env uv run --no-sync pytest tests/policies/test_workflow_controller.py tests/policies/test_workflow_comparison.py tests/tools/test_workflow_operations.py tests/e2e/test_workflow_controller_e2e.py -v
 ```
 
 The tests use temporary repositories, a real isolated server and runner, and a
 scripted model endpoint. They do not call a model provider or change the running
 Omnigent installation. The coding end-to-end test creates a candidate worktree,
 executes worker file tools, checks reviewer and out-of-worktree write denial,
-reads the assigned goal brief, resumes a question after restart, completes the parallel review pairs, restarts
-the runner again, and requires selection before publication. Only
+reads the assigned stage brief, resumes a question after restart, completes the
+parallel review pairs, restarts the runner again, and requires selection before
+publication. The Compare case also checks read-only exploration, complete
+proposal presentation, revision, rejection, subset approval, no early worktree
+creation, durable design waiting, and the final result comparison. Policy tests
+cover all-design approval, single-design approval, cancellation, unsuccessful
+candidates, stale decisions, and invalid evidence. A separate isolated server
+restart check reloads both the design wait and the recorded approval from disk. Only
 the external publication effect is replaced in that test; operation tests cover
 Git state and mocked GitHub interactions separately.
 
@@ -182,7 +226,7 @@ reject publication commands. They are workflow controls, not a security sandbox
 for arbitrary shell code. Use a trusted local repository and runner.
 
 This controller targets one local server and its runner. It does not provide a
-multi-server distributed lock. Native Codex reasoning and review quality require
-manual provider-backed verification; deterministic tests validate the tool and
-state transitions. Keep the coordinator session and candidate worktrees until
+multi-server distributed lock. The quality of proposed designs, recommendations,
+and native Codex reviews requires manual provider-backed verification; deterministic
+tests validate the tool and state transitions. Keep the coordinator session and candidate worktrees until
 publication and its evidence are complete.

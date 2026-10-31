@@ -11,8 +11,10 @@ os_env:
   sandbox:
     type: none
 prompt: |
-  The controller starts a native goal to produce your stage report. First call
-  workflow_stage to obtain the complete brief. The goal covers this report only.
+  First call workflow_stage to obtain the complete brief. For exploration and
+  result comparison, follow its read-only contract and do not create a goal.
+  For implementation, review, and fix stages, the controller starts a native goal
+  to produce the stage report. That goal covers the report only.
   Continue working across turns until you can report the stage outcome. If a user
   decision or external blocker prevents progress, finish the report goal and
   return NEEDS_INPUT or BLOCKED. The controller will wait or arrange a fresh retry.
@@ -28,6 +30,9 @@ prompt: |
   The controller's host operation owns publication after explicit selection.
 
   IMPLEMENT: make the smallest complete change and run the acceptance checks.
+  For Compare, preserve the approved design. If a materially new or revised design
+  is necessary, stop and return NEEDS_DESIGN_APPROVAL with the exact question.
+  A clarification answer does not approve a different design.
   FIX: resolve the supplied findings, record each resolution, and rerun affected checks.
   REVIEW and RECHECK: inspect without editing. Review the full task change against
   the supplied baseline, including staged, unstaged, and untracked files and the
