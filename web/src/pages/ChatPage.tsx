@@ -2490,6 +2490,9 @@ function ComposerImpl(
   // from the composer's read-only model/effort label.
   const sessionHarness = useChatStore((s) => s.sessionHarness);
   const subAgentName = useChatStore((s) => s.subAgentName);
+  const showWorkflowPrompts =
+    (subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name) ===
+    "workflow-controller";
   const brainHarnessLabels = useBrainHarnessLabels();
   const harnessLabel = composerHarnessLabel(
     modelPickerKind,
@@ -4082,33 +4085,35 @@ function ComposerImpl(
                   prompt:
                     'We\'re in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.',
                 },
-              ].map(({ label, prompt, icon: Icon }) => (
-                <Button
-                  key={label}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-9 px-2 text-xs md:h-8"
-                  title={label}
-                  disabled={
-                    disabled ||
-                    isReadOnly ||
-                    hasPendingElicitation ||
-                    composerLockedByBtw ||
-                    savingSubmitEffort
-                  }
-                  onClick={() => {
-                    editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
-                    dirtyRef.current = true;
-                    resetCursor();
-                    if (commandError !== null) setCommandError(null);
-                    textareaRef.current?.focus();
-                  }}
-                >
-                  <Icon className="size-4" aria-hidden="true" />
-                  {label}
-                </Button>
-              ))}
+              ]
+                .filter(({ label }) => label === "focus" || showWorkflowPrompts)
+                .map(({ label, prompt, icon: Icon }) => (
+                  <Button
+                    key={label}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 px-2 text-xs md:h-8"
+                    title={label}
+                    disabled={
+                      disabled ||
+                      isReadOnly ||
+                      hasPendingElicitation ||
+                      composerLockedByBtw ||
+                      savingSubmitEffort
+                    }
+                    onClick={() => {
+                      editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
+                      dirtyRef.current = true;
+                      resetCursor();
+                      if (commandError !== null) setCommandError(null);
+                      textareaRef.current?.focus();
+                    }}
+                  >
+                    <Icon className="size-4" aria-hidden="true" />
+                    {label}
+                  </Button>
+                ))}
               {showEffort &&
                 !showInterruptButton &&
                 !(costRoutingEligible && submitRoutingMode === "on") && (

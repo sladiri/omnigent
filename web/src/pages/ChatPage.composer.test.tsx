@@ -6148,6 +6148,42 @@ describe("effort submit buttons", () => {
   });
 });
 
+describe("workflow prompt visibility", () => {
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+    setComposerState({ subAgentName: null });
+  });
+
+  it("shows workflow prompts only for the selected controller and preserves the draft", () => {
+    clearSessionDrafts();
+    setComposerState({ conversationId: "workflow-prompt", subAgentName: null });
+    const props = composerProps({
+      agents: [
+        { id: "controller", name: "workflow-controller" },
+        { id: "coding", name: "codex" },
+      ],
+    });
+    const view = renderWithTooltips(<Composer {...props} />);
+    fireEvent.change(textarea(), { target: { value: "My task" } });
+    for (const selectedAgentId of [null, "coding", "controller", "coding", "missing"]) {
+      view.rerender(
+        <TooltipProvider>
+          <Composer {...props} selectedAgentId={selectedAgentId} />
+        </TooltipProvider>,
+      );
+      for (const name of ["implement", "compare"]) {
+        expect(screen.queryByRole("button", { name }) !== null).toBe(
+          selectedAgentId === "controller",
+        );
+      }
+      expect(screen.getByRole("button", { name: "focus" })).toBeVisible();
+      expect(textarea()).toHaveValue("My task");
+    }
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+});
+
 describe("focus prompt button", () => {
   beforeEach(() => {
     clearSessionDrafts();
