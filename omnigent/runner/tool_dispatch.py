@@ -184,7 +184,6 @@ def _string_mapping(value: object) -> dict[str, str] | None:
 _INBOX_OUTPUT_MAX_CHARS = 12000
 _OS_ENV_SHELL_DEFAULT_TIMEOUT_S = 120.0
 _RUNNER_EXECUTION_TIMEOUT_S = 7200.0
-_SUBAGENT_POLICY_STATUSES = frozenset({"completed", "failed"})
 _SUBAGENT_INBOX_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SUBAGENT_POLICY_FAILURE_OUTPUT = "[Result suppressed by policy: policy evaluation failed]"
 _SESSION_WRAPPER_LABEL_KEY = "omnigent.wrapper"
@@ -8047,6 +8046,10 @@ def _subagent_tool_result_policy_request(
                     "title": payload.get("title"),
                     "conversation_id": _subagent_child_id(payload),
                 },
+                "subagent": {
+                    "status": payload.get("status"),
+                    "work_id": payload.get("work_id"),
+                },
             },
         }
     }
@@ -8167,7 +8170,7 @@ async def _evaluate_subagent_inbox_output(
     """
     if (
         payload.get("type") != "sub_agent"
-        or payload.get("status") not in _SUBAGENT_POLICY_STATUSES
+        or payload.get("status") not in _SUBAGENT_INBOX_TERMINAL_STATUSES
     ):
         return _SubagentInboxEvaluation(payload)
     output = payload.get("output")

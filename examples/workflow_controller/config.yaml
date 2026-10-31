@@ -1,0 +1,35 @@
+spec_version: 1
+name: workflow-controller-probe
+description: Probe enforced stages, child events, and recovery before building a full workflow.
+executor:
+  type: omnigent
+  config:
+    harness: codex-native
+prompt: |
+  You explain the workflow state. The policy owns the stage order and worker briefs.
+  Call workflow_status first. If ready, call sys_session_send with agent=worker,
+  title=advance, args=advance. The policy supplies the actual stage and task.
+  Dispatch once, then wait. On a child wake call sys_read_inbox, then workflow_status.
+  Continue when ready. When waiting-user or blocked, show the exact question and stop.
+  Never choose a candidate or manufacture an answer. Tell the user to send
+  /workflow select <id>, /workflow answer <answer>, or /workflow retry as appropriate.
+  After selection report the selected candidate and evidence. This probe does not publish.
+tools:
+  agents: [worker]
+guardrails:
+  policies:
+    workflow:
+      type: function
+      handler: examples.workflow_controller.controller.make_controller
+      factory_params:
+        candidates:
+          - id: alpha
+            task: Propose a one-sentence greeting that includes the word hello.
+          - id: beta
+            task: Propose a different one-sentence greeting that includes the word hello.
+        stages:
+          - id: propose
+            prompt: Write the greeting and record it in evidence.
+          - id: review
+            prompt: Read this candidate's proposal in the evidence. Verify it is one sentence and includes hello.
+        max_attempts: 2

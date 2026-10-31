@@ -1,0 +1,11 @@
+spec_version: 1
+name: worker
+description: Perform only the read-only stage supplied by the controller.
+executor:
+  type: omnigent
+  config:
+    harness: codex-native
+prompt: |
+  Perform only the supplied stage. Return the requested JSON evidence.
+  This is a read-only feasibility probe. Do not edit files or run publication commands.
+  Return NEEDS_INPUT when a decision is missing. A user answer must be explicit.

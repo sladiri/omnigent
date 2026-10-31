@@ -5635,6 +5635,13 @@ async def test_scaffold_subagent_defers_terminal_delivery_while_continuation_buf
             "SECRET_MARKER",
             id="failed-deny-suppresses",
         ),
+        pytest.param(
+            "cancelled",
+            {"result": "POLICY_ACTION_DENY", "reason": "cancelled secret output"},
+            "[Result suppressed by policy: cancelled secret output]",
+            "SECRET_MARKER",
+            id="cancelled-deny-suppresses",
+        ),
     ],
 )
 async def test_sys_read_inbox_applies_subagent_tool_result_policy(
@@ -5662,6 +5669,7 @@ async def test_sys_read_inbox_applies_subagent_tool_result_policy(
     session_inbox.put_nowait(
         {
             "type": "sub_agent",
+            "work_id": "subagent_policy_dispatch",
             "task_id": "conv_child_policy",
             "handle_id": "conv_child_policy",
             "conversation_id": "conv_child_policy",
@@ -5708,6 +5716,10 @@ async def test_sys_read_inbox_applies_subagent_tool_result_policy(
         "agent": "worker",
         "title": "phase-policy",
         "conversation_id": "conv_child_policy",
+    }
+    assert event["request_data"]["subagent"] == {
+        "status": status,
+        "work_id": "subagent_policy_dispatch",
     }
     assert expected_output in inbox_output
     assert blocked_output not in inbox_output
@@ -5871,6 +5883,14 @@ async def test_sys_cancel_task_stops_subagent_and_dedupes_late_completion(
                     output=None,
                 )
             return httpx.Response(202, json={"queued": True})
+        if (
+            request.method == "POST"
+            and request.url.path == "/v1/sessions/conv_parent_cancel/policies/evaluate"
+        ):
+            event = json.loads(request.content)["event"]
+            assert event["request_data"]["subagent"]["status"] == "cancelled"
+            assert event["request_data"]["subagent"]["work_id"]
+            return httpx.Response(200, json={"result": "POLICY_ACTION_ALLOW"})
         return httpx.Response(404, json={"error": str(request.url)})
 
     async with httpx.AsyncClient(
@@ -5909,6 +5929,8 @@ async def test_sys_cancel_task_stops_subagent_and_dedupes_late_completion(
             inbox_output = await execute_tool(
                 tool_name="sys_read_inbox",
                 arguments="{}",
+                server_client=server_client,
+                conversation_id="conv_parent_cancel",
                 session_inbox=session_inbox,
             )
         finally:
