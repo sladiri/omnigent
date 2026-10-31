@@ -397,6 +397,10 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                     )
                 )
             elif stage == "review-a":
+                report.update(
+                    findings=[{"id": "wording", "message": "Confirm the greeting punctuation"}],
+                    question="Keep hello without punctuation?",
+                )
                 child_calls.append(
                     _tool(
                         "sys_os_write",
@@ -407,6 +411,8 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                         },
                     )
                 )
+            if stage == "fix-a":
+                report["resolved"] = ["wording"]
             child_calls.append(
                 _tool("sys_os_read", f"{stage}-read", {"path": str(workspace / "greeting.txt")})
             )
@@ -482,7 +488,29 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                     and item.get("type") == "function_call_output"
                 ]
                 assert denied and "denied" in str(denied[0]["output"]).lower(), child_items
+                assert state["status"] == "waiting-user"
+                assert "Confirm the greeting punctuation" in state["question"]
                 restart_live_runner()
+                paused = parent_turn(
+                    "Show the review again.",
+                    [
+                        _tool("sys_session_send", "review-paused-send"),
+                        snapshot("review-paused-snapshot"),
+                        _tool("workflow_status", "review-paused-status"),
+                    ],
+                    "REVIEW_STILL_WAITING",
+                )
+                assert _status(paused, "review-paused-status") == state
+                answered = parent_turn(
+                    "/workflow answer Keep hello without punctuation",
+                    [
+                        snapshot("review-answer-snapshot"),
+                        _tool("workflow_status", "review-answer-status"),
+                    ],
+                    "FIX_AUTHORIZED",
+                )
+                resumed = _status(answered, "review-answer-status")
+                assert resumed["status"] == "ready" and resumed["current"] == "a/fix-a"
         assert (repository / "greeting.txt").read_text() == "before\n"
         assert not publication_record.exists()
 

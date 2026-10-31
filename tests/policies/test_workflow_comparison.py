@@ -464,6 +464,8 @@ async def test_parallel_design_change_takes_priority_over_clarification(coding):
         coding, spec, {"outcome": "NEEDS_DESIGN_APPROVAL", "question": "Different storage needed"}
     )
     assert coding.state["status"] == "waiting-design-revision"
+    assert "Which style?" in coding.state["question"]
+    assert "Different storage needed" in coding.state["question"]
     assert (await coding.evaluate(_request("/workflow answer yes"))).action == PolicyAction.DENY
     assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
@@ -514,7 +516,7 @@ async def test_parallel_failure_recovery_preserves_design_approval_request(
         assert coding.state["status"] == "blocked"
         await coding.evaluate(_request("/workflow retry-dispatch"))
     assert coding.state["status"] == "waiting-design-revision"
-    assert coding.state["question"] == "Different storage needed"
+    assert "Different storage needed" in coding.state["question"]
     assert (
         coding.state["incomplete"]["simple/review-b-standards"]["outcome"]
         == "NEEDS_DESIGN_APPROVAL"

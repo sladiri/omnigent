@@ -121,9 +121,10 @@ require an intermediate commit.
 
 Each fix accounts for every outstanding finding. Its verification stage checks
 the resulting code. `final-b` rechecks Standards and Spec after the final C fixes.
-Unresolved verification findings loop back to their fix stage, subject to the
-configured attempt limit. A successful turn or an idle worker is not a passed
-gate: the controller requires the expected structured evidence, including explicit
+Any review or verification findings stop for your decision before the fix stage.
+After your answer, unresolved verification findings loop back to their fix stage,
+subject to the configured attempt limit. A successful turn or an idle worker is
+not a passed gate: the controller requires structured evidence, including explicit
 `findings` and `resolved` lists on every `COMPLETE` report.
 
 Content snapshots include tracked, untracked, staged, and unstaged working files
@@ -133,12 +134,25 @@ changes; review quality still depends on the reviewers and their recorded checks
 
 ## Questions, selection, and recovery
 
-When a worker needs a decision, the coordinator presents its question and waits.
-Reply with `/workflow answer <answer>`. Unrelated messages and ordinary runtime
-wakes do not answer it. `/workflow retry` retries a blocked terminal stage after
-you resolve its blocker. Fix attempts are bounded by `max_attempts` in config.
-To abandon a blocked candidate, send `/workflow reject <id> <reason>`. The
-controller preserves its worktree and advances to the next candidate. Rejected
+Both workflows separate review from fixing. Every initial review, verification,
+and final review stops for findings, conflicts, questions, or blockers. Clean
+reviews continue. The parallel Standards and Spec reviews collect both reports
+before asking; no fix or later stage starts while a decision is pending.
+
+The coordinator presents the findings and questions. Reply with
+`/workflow answer <decision and instructions>`, for example:
+`/workflow answer Keep the existing API and fix the missing validation`.
+Completed reviews then proceed to their fix stage. Incomplete or blocked reviews
+run again with your answer. Review decisions and evidence survive restart.
+A materially different Compare design still requires new proposal approval.
+
+Other workers also wait when they need a decision. Unrelated messages, runtime
+wakes, and goal continuations are not answers. `/workflow retry` cannot bypass a
+review decision; it only retries a blocked terminal stage after you resolve its
+blocker. Fix attempts are bounded by `max_attempts` in config.
+To abandon a candidate blocked or waiting at review, send
+`/workflow reject <id> <reason>`. The controller preserves its worktree and
+advances to the next candidate. Rejected
 candidates cannot be selected.
 
 After the result comparison is presented, send an exact final selection:
