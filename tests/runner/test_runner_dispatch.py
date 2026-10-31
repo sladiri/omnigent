@@ -3954,6 +3954,7 @@ def _spec_with_subagent_harness(harness: str) -> SimpleNamespace:
 )
 async def test_sys_session_send_model_lands_in_child_create_body(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     harness: str,
     model: str,
 ) -> None:
@@ -4004,6 +4005,7 @@ async def test_sys_session_send_model_lands_in_child_create_body(
                     {
                         "agent": "worker",
                         "title": "fix-auth",
+                        "workspace": str(tmp_path),
                         "args": {
                             "input": "fix the auth bug",
                             "model": model,
@@ -4026,6 +4028,178 @@ async def test_sys_session_send_model_lands_in_child_create_body(
     assert len(create_bodies) == 1, "fresh named send must create exactly one child"
     assert create_bodies[0]["model_override"] == model
     assert create_bodies[0]["sub_agent_name"] == "worker"
+    assert create_bodies[0]["workspace"] == str(tmp_path.resolve())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "allowed"),
+    [
+        ("inside", True),
+        ("boundary", True),
+        ("outside", False),
+        ("symlink-in", True),
+        ("symlink-out", False),
+        ("missing", False),
+        ("file", False),
+        ("inherited-no-os-env", False),
+        ("inherited-no-cwd", False),
+        ("unrestricted", True),
+        ("relative-subdir-missing", False),
+        ("relative-subdir-present", True),
+    ],
+)
+async def test_sys_session_send_validates_workspace_before_child_creation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str, allowed: bool
+) -> None:
+    """Named sends cannot bypass cwd boundaries through runner affinity."""
+    from omnigent.inner.datamodel import OSEnvSpec
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    boundary = tmp_path / "allowed"
+    boundary.mkdir()
+    inside = boundary / "candidate"
+    inside.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    spec = _spec_with_subagent_harness("claude-sdk")
+    spec.os_env = OSEnvSpec(type="caller_process", cwd=str(boundary))
+    child = spec.sub_agents[0]
+    child.os_env = OSEnvSpec(type="caller_process", cwd=str(boundary))
+    workspace = inside
+    if case == "boundary":
+        workspace = boundary
+    elif case in {"outside", "inherited-no-os-env", "inherited-no-cwd", "unrestricted"}:
+        workspace = outside
+        if case == "inherited-no-os-env":
+            child.os_env = None
+        elif case == "inherited-no-cwd":
+            child.os_env.cwd = None
+        elif case == "unrestricted":
+            child.os_env.cwd = "."
+    elif case in {"symlink-in", "symlink-out"}:
+        workspace = boundary / "link"
+        workspace.symlink_to(inside if case == "symlink-in" else outside, target_is_directory=True)
+    elif case == "missing":
+        workspace = boundary / "missing"
+    elif case == "file":
+        workspace = boundary / "file"
+        workspace.write_text("not a directory")
+    elif case.startswith("relative-subdir-"):
+        child.os_env.cwd = "./src"
+        if case == "relative-subdir-present":
+            (inside / "src").mkdir()
+
+    monkeypatch.setattr(runner_app, "get_session_agent_id", lambda _sid: "ag_parent")
+    monkeypatch.setattr(subagent_work, "register_child_session", lambda *a, **k: None)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/child_sessions"):
+            return httpx.Response(200, json={"data": []})
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            return httpx.Response(201, json={"id": "workspace_child"})
+        if request.method == "POST" and request.url.path.endswith("/events"):
+            return httpx.Response(202, json={"queued": True})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://server"
+    ) as client:
+        try:
+            output = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(
+                    {
+                        "agent": "worker",
+                        "title": "work",
+                        "args": "implement",
+                        "workspace": str(workspace),
+                    }
+                ),
+                server_client=client,
+                conversation_id="workspace_parent",
+                agent_spec=spec,
+                session_inbox=asyncio.Queue(),
+            )
+        finally:
+            subagent_work.unregister_subagent_work("workspace_child")
+            subagent_work._session_inboxes_ref.pop("workspace_parent", None)
+    if allowed:
+        assert json.loads(output)["status"] == "launching", output
+        creates = [r for r in requests if r.method == "POST" and r.url.path == "/v1/sessions"]
+        assert len(creates) == 1
+        assert json.loads(creates[0].content)["workspace"] == str(workspace.resolve())
+    else:
+        assert output.startswith("Error:") and "workspace" in output, output
+        assert all(request.method == "GET" for request in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["existing", "by-id", "relative", "empty", "wrong-type"])
+async def test_sys_session_send_rejects_invalid_workspace_binding(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """A workspace binds a new child only; invalid sends never write."""
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    monkeypatch.setattr(runner_app, "get_session_agent_id", lambda _sid: "ag_parent")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/child_sessions"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "workspace_child",
+                            "tool": "worker",
+                            "session_name": "work",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    args: dict[str, Any] = {
+        "agent": "worker",
+        "title": "work",
+        "args": "implement",
+        "workspace": "/tmp/candidate-worktree",
+    }
+    if mode == "by-id":
+        args = {
+            "session_id": "workspace_child",
+            "args": "continue",
+            "workspace": args["workspace"],
+        }
+    elif mode == "relative":
+        args["workspace"] = "relative/path"
+    elif mode == "empty":
+        args["workspace"] = ""
+    elif mode == "wrong-type":
+        args["workspace"] = 42
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://server"
+    ) as client:
+        try:
+            output = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(args),
+                server_client=client,
+                conversation_id="workspace_parent",
+                agent_spec=_spec_with_subagent_harness("claude-native"),
+                session_inbox=asyncio.Queue(),
+            )
+        finally:
+            subagent_work._session_inboxes_ref.pop("workspace_parent", None)
+    assert output.startswith("Error:") and "workspace" in output
+    assert all(request.method == "GET" for request in requests)
 
 
 @pytest.mark.asyncio

@@ -1,35 +1,38 @@
 spec_version: 1
-name: workflow-controller-probe
-description: Probe enforced stages, child events, and recovery before building a full workflow.
+name: workflow-controller
+description: Implement isolated candidates, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
   config:
     harness: codex-native
 prompt: |
-  You explain the workflow state. The policy owns the stage order and worker briefs.
-  Call workflow_status first. If ready, call sys_session_send with agent=worker,
-  title=advance, args=advance. The policy supplies the actual stage and task.
-  Dispatch once, then wait. On a child wake call sys_read_inbox, then workflow_status.
-  Continue when ready. When waiting-user or blocked, show the exact question and stop.
-  Never choose a candidate or manufacture an answer. Tell the user to send
-  /workflow select <id>, /workflow answer <answer>, or /workflow retry as appropriate.
-  After selection report the selected candidate and evidence. This probe does not publish.
+  Coordinate the user's coding workflow. The policy owns stage order, worktrees,
+  worker briefs, review gates, selection, and publication permissions.
+  Call workflow_status first and after every tool result. Follow its next action.
+  Use workflow_prepare for preparation, workflow_snapshot for revision checks,
+  and sys_session_send (agent=worker, title=advance, args=advance) for a ready stage.
+  The policy supplies the actual arguments. Dispatch once, then wait, except when
+  state.parallel.next requires the second independent B reviewer. Dispatch that
+  reviewer too, then wait for both results before advancing.
+  On a completion wake, call sys_read_inbox and inspect workflow_status.
+  Use workflow_reconcile after an interrupted or uncertain dispatch; never resend
+  merely because a tool response was lost. Continue through satisfied gates.
+  When waiting-user or blocked, show the exact question and end the turn.
+  Never infer an answer or select a candidate. Explain the required exact command:
+  /workflow start <JSON>, /workflow select <id>, /workflow answer <answer>,
+  or /workflow retry. Unrelated messages and runtime wakes are not answers.
+  Compare all completed candidates and their evidence before asking for selection.
+  After selection, report the reviewed worktree, checks, limits, and commit/PR text.
+  Call workflow_publish only when the state permits it. Tell the user when signing
+  and pushing may need their graphical prompt or hardware key. Do not issue shell
+  publication commands yourself. Report the returned commit and PR URL.
 tools:
   agents: [worker]
+  timeout: 86400
 guardrails:
   policies:
     workflow:
       type: function
-      handler: examples.workflow_controller.controller.make_controller
+      handler: omnigent.workflows.controller.make_controller
       factory_params:
-        candidates:
-          - id: alpha
-            task: Propose a one-sentence greeting that includes the word hello.
-          - id: beta
-            task: Propose a different one-sentence greeting that includes the word hello.
-        stages:
-          - id: propose
-            prompt: Write the greeting and record it in evidence.
-          - id: review
-            prompt: Read this candidate's proposal in the evidence. Verify it is one sentence and includes hello.
         max_attempts: 2

@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from examples.workflow_controller.controller import STATE_KEY, make_controller
+from omnigent.native.native_policy_hook import hook_payload_to_evaluation_request
 from omnigent.policies.types import EvaluationContext, PolicyResult
 from omnigent.runner.tool_dispatch import _subagent_tool_result_policy_request
 from omnigent.runtime.policies.builder import build_policy_engine
 from omnigent.server.routes._sessions.helpers import _build_evaluation_context
 from omnigent.spec.parser import parse
 from omnigent.spec.types import AgentSpec, Phase, PolicyAction
-from omnigent.spec.validator import validate
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
-from omnigent.tools.manager import ToolManager
+from omnigent.workflows.controller import STAGES, STATE_KEY
 
 CONFIG = Path(__file__).parents[2] / "examples/workflow_controller"
 
@@ -65,6 +63,8 @@ def _completion(
             "stage": title.rsplit("/", 1)[0],
             "outcome": outcome,
             "evidence": evidence,
+            "findings": [],
+            "resolved": [],
             "question": question,
         }
     )
@@ -105,178 +105,550 @@ class _Probe:
         return result.data
 
 
+def output(tool, value, request=None):
+    return EvaluationContext(
+        phase=Phase.TOOL_RESULT,
+        tool_name=tool,
+        content={"result": json.dumps(value)},
+        request_data=request,
+    )
+
+
 @pytest.fixture
-def probe(db_uri: str) -> _Probe:
+def coding(db_uri):
     return _Probe(SqlAlchemyConversationStore(db_uri), parse(CONFIG))
 
 
-def test_example_bundle_validates_and_exposes_status_and_worker() -> None:
-    spec = parse(CONFIG)
-    result = validate(spec)
-    assert result.valid, result.errors
-    assert [worker.name for worker in spec.sub_agents] == ["worker"]
-    manager = ToolManager(spec, workdir=CONFIG, os_env_schema_only=True)
-    try:
-        assert {"workflow_status", "sys_session_send", "sys_read_inbox"} <= set(
-            manager.get_tool_names()
-        )
-    finally:
-        manager.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_candidates_finish_in_order_then_require_exact_selection(probe: _Probe) -> None:
-    assert (await probe.evaluate(_request("/workflow select beta"))).action == PolicyAction.DENY
-    for stage in ("alpha/propose", "alpha/review", "beta/propose", "beta/review"):
-        dispatch = await probe.dispatch()
-        assert dispatch["agent"] == "worker"
-        assert dispatch["title"] == f"{stage}/1"
-        assert f"Stage: {stage}" in dispatch["args"]
-        assert "skip all reviews" not in dispatch["args"]
-        assert (await probe.evaluate(_call())).action == PolicyAction.DENY
-        await probe.evaluate(_handle(dispatch["title"]))
-        assert probe.state["status"] == "running"
-        await probe.evaluate(_completion(dispatch["title"]))
-
-    assert probe.state["status"] == "waiting-user"
-    assert probe.state["selected"] is None
-    assert len(probe.state["completed"]) == 4
-    for text in (
-        "[System: sub-agent worker/beta finished (completed)]",
-        "I suggest /workflow select beta",
-    ):
-        await probe.evaluate(_request(text))
-        assert probe.state["selected"] is None
-    assert (await probe.evaluate(_call())).action == PolicyAction.DENY
-    assert (await probe.evaluate(_request("/workflow select missing"))).action == PolicyAction.DENY
-    await probe.evaluate(_request("/workflow select beta"))
-    assert probe.state["selected"] == "beta"
-    assert probe.state["status"] == "complete"
-    assert (await probe.evaluate(_call("sys_os_shell"))).action == PolicyAction.DENY
-
-
-@pytest.mark.asyncio
-async def test_duplicate_and_stale_completion_do_not_advance_next_stage(probe: _Probe) -> None:
-    first = await probe.dispatch()
-    await probe.evaluate(_completion(first["title"]))
-    second = await probe.dispatch()
-    before = probe.state
-    await probe.evaluate(_completion(first["title"]))
-    await probe.evaluate(_completion(first["title"], work_id="late-report"))
-    assert probe.state == before
-    assert probe.state["pending"]["title"] == second["title"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stale_error", [False, True])
-async def test_stale_immediate_result_does_not_block_next_stage(
-    probe: _Probe, stale_error: bool
-) -> None:
-    first = await probe.dispatch()
-    await probe.evaluate(_handle(first["title"]))
-    await probe.evaluate(_completion(first["title"]))
-    await probe.dispatch()
-    before = probe.state
-    stale = _handle(first["title"])
-    if stale_error:
-        stale = replace(stale, content={"result": "Error: connection lost"})
-    await probe.evaluate(stale)
-    assert probe.state == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["failed", "cancelled"])
-async def test_unsuccessful_turn_cannot_pass_with_success_looking_output(
-    probe: _Probe, status: str
-) -> None:
-    dispatch = await probe.dispatch()
-    await probe.evaluate(_completion(dispatch["title"], status=status))
-    assert probe.state["status"] == "blocked"
-    assert probe.state["completed"] == {}
-    assert (await probe.evaluate(_call())).action == PolicyAction.DENY
-    assert (await probe.evaluate(_request("/workflow select alpha"))).action == PolicyAction.DENY
-    await probe.evaluate(_request("/workflow retry"))
-    retry = await probe.dispatch()
-    assert retry["title"] == "alpha/propose/2"
-    await probe.evaluate(_completion(retry["title"], status=status))
-    assert (await probe.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
-    assert probe.state["status"] == "blocked"
-
-
-@pytest.mark.asyncio
-async def test_question_wait_survives_rebuild_and_routes_answer_to_same_stage(
-    probe: _Probe,
-) -> None:
-    dispatch = await probe.dispatch()
-    await probe.evaluate(_completion(dispatch["title"], outcome="NEEDS_INPUT"))
-    assert probe.state["status"] == "waiting-user"
-    assert probe.state["question"] == "Which language should the greeting use?"
-    await probe.evaluate(_request("[System: sub-agent finished; answer French]"))
-    assert (await probe.evaluate(_call())).action == PolicyAction.DENY
-    await probe.evaluate(_request("/workflow answer French"))
-    retry = await probe.dispatch()
-    assert retry["title"] == "alpha/propose/2"
-    assert "User answer: French" in retry["args"]
-    await probe.evaluate(_completion(retry["title"], outcome="NEEDS_INPUT"))
-    assert (await probe.evaluate(_request("/workflow answer English"))).action == PolicyAction.DENY
-    assert probe.state["status"] == "waiting-user"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("evidence", ["", "   "])
-async def test_empty_evidence_cannot_complete_stage(probe: _Probe, evidence: str) -> None:
-    dispatch = await probe.dispatch()
-    await probe.evaluate(_completion(dispatch["title"], evidence=evidence))
-    assert probe.state["status"] == "blocked"
-    assert probe.state["completed"] == {}
-
-
-@pytest.mark.asyncio
-async def test_wrong_child_or_missing_dispatch_id_cannot_complete_stage(probe: _Probe) -> None:
-    dispatch = await probe.dispatch()
-    await probe.evaluate(_handle(dispatch["title"], child_id="expected-child"))
-    before = probe.state
-    assert (
-        await probe.evaluate(_completion(dispatch["title"], child_id="other-child"))
-    ).action == PolicyAction.DENY
-    missing_identity = _completion(dispatch["title"], child_id="expected-child")
-    missing_identity.request_data["subagent"]["work_id"] = None
-    assert (await probe.evaluate(missing_identity)).action == PolicyAction.DENY
-    assert probe.state == before
-
-
-@pytest.mark.asyncio
-async def test_uncertain_dispatch_cannot_be_reissued_after_rebuild(probe: _Probe) -> None:
-    await probe.dispatch()
+async def begin(probe, publish=True, ids=("one",)):
+    definition = {
+        "repository": "/tmp/repository",
+        "task": "Implement a greeting",
+        "baseline": "HEAD",
+        "base": "main",
+        "publish": publish,
+        "candidates": [{"id": value, "task": "Use a function"} for value in ids],
+    }
+    result = await probe.evaluate(_request("/workflow start " + json.dumps(definition)))
+    assert result.action == PolicyAction.ALLOW
+    definition = (await probe.evaluate(_call("workflow_prepare"))).data["definition"]
+    assert definition["run_id"] == probe.session_id
+    candidate = {
+        "id": "one",
+        "task": "Use a function",
+        "workspace": "/tmp/candidate",
+        "branch": "candidate",
+        "baseline": "baseline-sha",
+    }
+    candidates = [{**candidate, "id": value} for value in ids]
     await probe.evaluate(
-        EvaluationContext(
-            phase=Phase.TOOL_RESULT,
-            tool_name="sys_session_send",
-            content={"result": "Error: connection lost"},
+        output(
+            "workflow_prepare",
+            {
+                "run_id": probe.session_id,
+                "candidates": candidates,
+                "pr_template": "## Summary\n- [ ] Tested\n",
+            },
         )
     )
-    assert probe.state["status"] == "blocked"
-    assert probe.state["pending"] is not None
-    assert (await probe.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
-    assert (await probe.evaluate(_call())).action == PolicyAction.DENY
+    await snapshot(probe)
+
+
+async def snapshot(probe, revision="tree-1"):
+    await probe.evaluate(
+        output("workflow_snapshot", {"revision": revision, "branch": "candidate"})
+    )
+
+
+async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE"):
+    dispatch = (await probe.evaluate(_call())).data
+    assert dispatch and dispatch["title"].startswith(probe.state["current"])
+    second = (await probe.evaluate(_call())).data if probe.state.get("parallel") else None
+    request = {
+        "name": "sys_session_send",
+        "args": {
+            "agent": "worker",
+            "title": dispatch["title"],
+            "conversation_id": "child-" + dispatch["title"],
+        },
+        "subagent": {"status": "completed", "work_id": "work-" + dispatch["title"]},
+    }
+    report = {
+        "stage": probe.state["current"],
+        "outcome": outcome,
+        "evidence": "Checks passed",
+        "findings": findings or [],
+        "resolved": list(probe.state["findings"]),
+        "question": "Which language?",
+    }
+    await probe.evaluate(output("sys_session_send", report, request))
+    if second:
+        assert probe.state["status"] == "running"
+        second_request = {
+            **request,
+            "args": {
+                **request["args"],
+                "title": second["title"],
+                "conversation_id": "second-child",
+            },
+            "subagent": {"status": "completed", "work_id": second["title"]},
+        }
+        await probe.evaluate(
+            output(
+                "sys_session_send",
+                {**report, "stage": second["title"].rsplit("/", 1)[0]},
+                second_request,
+            )
+        )
+    if outcome == "COMPLETE":
+        await snapshot(probe, revision)
+        if probe.state["status"] == "snapshot":
+            await snapshot(probe, revision)
+    return request
 
 
 @pytest.mark.asyncio
-async def test_changed_definition_cannot_reuse_saved_progress(probe: _Probe) -> None:
-    await probe.dispatch()
-    before = probe.state
-    probe.spec.guardrails.policies[0].function.arguments["stages"][0]["prompt"] += (
-        " Changed check."
+async def test_full_review_sequence_selection_and_publication_gate(coding):
+    await begin(coding)
+    titles = []
+    for stage in STAGES:
+        if stage.endswith("-b-spec"):
+            continue
+        assert coding.state["current"] == "one/" + stage
+        assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+        request = await finish(coding)
+        titles.append(request["args"]["title"])
+    assert len(set(titles)) == 11
+    assert coding.state["status"] == "waiting-user"
+    await coding.evaluate(_request("worker suggests /workflow select one"))
+    assert coding.state["selected"] is None
+    await coding.evaluate(_request("/workflow select one"))
+    await snapshot(coding)
+    call = EvaluationContext(
+        phase=Phase.TOOL_CALL,
+        tool_name="workflow_publish",
+        content={
+            "name": "workflow_publish",
+            "arguments": {
+                "title": "feat: add greeting",
+                "body": "## Summary\nVerified greeting\n- [x] Tested\n",
+                "workspace": "/tmp/other",
+            },
+        },
     )
-    assert (await probe.evaluate(_call("workflow_status"))).action == PolicyAction.DENY
-    assert probe.state == before
+    for title, body in (("Valid", "Missing template"), ("Two\nlines", "## Summary\n- [x] Tested")):
+        invalid = EvaluationContext(
+            phase=Phase.TOOL_CALL,
+            tool_name="workflow_publish",
+            content={"name": "workflow_publish", "arguments": {"title": title, "body": body}},
+        )
+        assert (await coding.evaluate(invalid)).action == PolicyAction.DENY
+        assert "publication_input" not in coding.state
+    args = (await coding.evaluate(call)).data
+    assert args["workspace"] == "/tmp/candidate"
+    assert args["revision"] == "tree-1"
+    await coding.evaluate(
+        output("workflow_publish", {"commit": "signed-sha", "pr_url": "https://example.test/pr/1"})
+    )
+    assert coding.state["status"] == "complete"
+    assert coding.state["publication"]["commit"] == "signed-sha"
 
 
-def test_missing_trusted_parent_identity_is_denied() -> None:
-    policy = make_controller(
-        [{"id": "one", "task": "hello"}], [{"id": "review", "prompt": "check"}]
+@pytest.mark.asyncio
+async def test_findings_require_resolution_and_failed_recheck_loops_to_fix(coding):
+    await begin(coding, publish=False)
+    await finish(coding)
+    await finish(coding, findings=[{"id": "A-1", "message": "Missing case"}])
+    assert coding.state["current"] == "one/fix-a"
+    await finish(coding)
+    await finish(coding, findings=[{"id": "A-2", "message": "Still missing"}])
+    assert coding.state["current"] == "one/fix-a"
+    await finish(coding)
+    await finish(coding, findings=[{"id": "A-3", "message": "Still missing"}])
+    assert coding.state["status"] == "blocked"
+    assert "limit" in coding.state["question"]
+
+
+@pytest.mark.asyncio
+async def test_final_b_findings_rerun_b_and_c_on_the_fixed_revision(coding):
+    await begin(coding)
+    revision = "tree-1"
+    while coding.state["current"] != "one/final-b-standards":
+        if coding.state["current"] == "one/fix-c":
+            revision = "tree-after-c"
+        await finish(coding, revision=revision)
+    await finish(
+        coding, findings=[{"id": "regression", "message": "C broke B"}], revision=revision
+    )
+    assert coding.state["current"] == "one/fix-b"
+    assert coding.state["verified"] == {}
+    revision = "tree-fixed"
+    for expected in (
+        "fix-b",
+        "verify-b-standards",
+        "review-c",
+        "fix-c",
+        "verify-c",
+        "final-b-standards",
+    ):
+        assert coding.state["current"] == "one/" + expected
+        await finish(coding, revision=revision)
+    assert coding.state["verified"] == {"one": revision}
+    for stage in ("verify-c", "final-b-standards", "final-b-spec"):
+        assert coding.state["completed"]["one/" + stage]["revision"] == revision
+
+
+@pytest.mark.asyncio
+async def test_question_wait_and_read_only_revision_change(coding):
+    await begin(coding)
+    await finish(coding, outcome="NEEDS_INPUT")
+    assert coding.state["status"] == "waiting-user"
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow answer English"))
+    await snapshot(coding)
+    await finish(coding)
+    await finish(coding, revision="changed-by-reviewer")
+    assert coding.state["status"] == "blocked"
+    assert coding.state["verified"] == {}
+
+
+@pytest.mark.asyncio
+async def test_selection_invalidates_changed_candidate(coding):
+    await begin(coding)
+    for _ in STAGES:
+        if _.endswith("-b-spec"):
+            continue
+        await finish(coding)
+    await coding.evaluate(_request("/workflow select one"))
+    await snapshot(coding)
+    await coding.evaluate(
+        EvaluationContext(
+            phase=Phase.TOOL_CALL,
+            tool_name="workflow_publish",
+            content={
+                "name": "workflow_publish",
+                "arguments": {
+                    "title": "feat: old greeting",
+                    "body": "## Summary\n- [x] Tested\n",
+                },
+            },
+        )
+    )
+    assert "publication_input" in coding.state
+    await coding.evaluate(output("workflow_publish", {"error": "pre-commit modified files"}))
+    await coding.evaluate(_request("/workflow retry"))
+    await snapshot(coding, "changed-after-review")
+    assert "publication_input" not in coding.state
+    assert coding.state["selected"] is None
+    assert coding.state["verified"] == {}
+    assert coding.state["current"] == "one/review-a"
+    assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+async def test_uncertain_dispatch_requires_reconcile_before_explicit_retry(coding):
+    await begin(coding)
+    await coding.evaluate(_call())
+    await coding.evaluate(output("sys_session_send", "Error: lost connection"))
+    assert (
+        await coding.evaluate(_request("/workflow retry-dispatch"))
+    ).action == PolicyAction.DENY
+    assert coding.state["pending"] is not None
+
+
+@pytest.mark.asyncio
+async def test_parallel_axes_wait_for_both_and_accept_reverse_completion_order(coding):
+    await begin(coding)
+    for _ in range(4):
+        await finish(coding)
+    standards = await coding.dispatch()
+    spec = await coding.dispatch()
+    assert standards["workspace"] == spec["workspace"] == "/tmp/candidate"
+    assert "standards" in standards["title"] and "spec" in spec["title"]
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await coding.evaluate(_completion(spec["title"], child_id="spec-child"))
+    assert coding.state["status"] == "running"
+    assert (await coding.evaluate(_call("workflow_snapshot"))).action == PolicyAction.DENY
+    await coding.evaluate(_completion(standards["title"], child_id="standards-child"))
+    assert coding.state["status"] == "snapshot"
+    await snapshot(coding)
+    assert coding.state["current"] == "one/fix-b"
+    assert all(
+        "one/review-b-" + axis in coding.state["completed"] for axis in ("standards", "spec")
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_dispatch_error_and_completion_cannot_affect_next_stage(coding):
+    await begin(coding)
+    prior = await finish(coding)
+    current = await coding.dispatch()
+    await coding.evaluate(output("sys_session_send", "Error: old timeout", prior))
+    await coding.evaluate(_completion(prior["args"]["title"]))
+    assert coding.state["status"] == "running"
+    assert coding.state["pending"]["title"] == current["title"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_recovers_existing_child_and_confirms_failure(coding, monkeypatch):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"],
+        parent_conversation_id=coding.session_id,
+        labels={"omnigent.subagent.dispatch_id": "registered-work"},
+    )
+    coding.store.set_session_live_status(child.id, "running")
+    await coding.evaluate(output("sys_session_send", "Error: lost handle"))
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["pending"]["child_id"] == child.id
+    assert coding.state["status"] == "running"
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await coding.evaluate(_completion(dispatch["title"], child_id=child.id, status="failed"))
+    assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
+    coding.store.set_session_live_status(child.id, "failed")
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["pending"] is None
+    await coding.evaluate(_request("/workflow retry"))
+    assert coding.state["status"] == "snapshot"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_empty_child_requires_user_confirmation_and_checks_again(
+    coding, monkeypatch
+):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"], parent_conversation_id=coding.session_id
+    )
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["status"] == "blocked"
+    assert coding.state["pending"]["reconciled_unstarted"]
+    coding.store.set_session_live_status(child.id, "running")
+    await coding.evaluate(_request("/workflow retry-dispatch"))
+    assert coding.state["status"] == "running"
+    assert coding.state["pending"]["child_id"] == child.id
+
+
+@pytest.mark.asyncio
+async def test_reconcile_absent_dispatch_allows_only_explicit_new_attempt(coding, monkeypatch):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    old = await coding.dispatch()
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["status"] == "blocked"
+    await coding.evaluate(_request("/workflow retry-dispatch"))
+    await snapshot(coding)
+    new = await coding.dispatch()
+    assert new["title"] != old["title"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_duplicate_children_revokes_prior_absent_confirmation(coding, monkeypatch):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    await coding.evaluate(output("workflow_reconcile", {}))
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"], parent_conversation_id=coding.session_id
+    )
+    monkeypatch.setattr(
+        coding.store, "get_conversations", lambda ids: {child.id: child, "duplicate": child}
+    )
+    await coding.evaluate(_request("/workflow retry-dispatch"))
+    assert coding.state["status"] == "blocked"
+    assert coding.state["pending"] is not None
+    assert "reconciled_absent" not in coding.state["pending"]
+
+
+@pytest.mark.asyncio
+async def test_attempt_limit_denies_dispatch_and_persists_blocked_state(coding):
+    await begin(coding)
+    for _ in range(3):
+        await finish(coding, outcome="NEEDS_INPUT")
+        await coding.evaluate(_request("/workflow answer clarified"))
+        await snapshot(coding)
+    result = await coding.evaluate(_call())
+    assert result.action == PolicyAction.DENY
+    assert coding.state["status"] == "blocked"
+    assert coding.state["pending"] is None
+    assert coding.state["dispatch_serial"] == 3
+
+
+@pytest.mark.asyncio
+async def test_second_parallel_child_failure_cannot_bypass_reconciliation(coding):
+    await begin(coding)
+    for _ in range(4):
+        await finish(coding)
+    standards, spec = await coding.dispatch(), await coding.dispatch()
+    await coding.evaluate(_completion(standards["title"]))
+    await coding.evaluate(_completion(spec["title"], status="failed", child_id="spec-child"))
+    assert coding.state["pending"] is None
+    assert coding.state["parallel"]["pending"]["child_id"] == "spec-child"
+    for command in ("/workflow retry", "/workflow reject one failed"):
+        assert (await coding.evaluate(_request(command))).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+async def test_candidates_are_sequential_and_only_user_can_reject_blocked_candidate(coding):
+    await begin(coding, publish=False, ids=("one", "two"))
+    for stage in STAGES:
+        if not stage.endswith("-b-spec"):
+            await finish(coding)
+    assert coding.state["current"] == "two/implement"
+    assert (await coding.evaluate(_request("/workflow select one"))).action == PolicyAction.DENY
+    await finish(coding, outcome="BLOCKED")
+    assert coding.state["status"] == "blocked"
+    await coding.evaluate(_request("/workflow reject two unsuitable after investigation"))
+    assert coding.state["status"] == "waiting-user"
+    assert coding.state["verified"] == {"one": "tree-1"}
+    assert (await coding.evaluate(_request("/workflow select two"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow select one"))
+    await snapshot(coding)
+    assert coding.state["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_worker_enforces_identity_paths_publication_and_review_read_only(
+    coding, monkeypatch
+):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"], parent_conversation_id=coding.session_id
+    )
+
+    async def worker_call(tool, arguments, child_id=child.id):
+        engine = build_policy_engine(
+            spec=coding.spec, conversation_id=child_id, conversation_store=coding.store
+        )
+        return await engine.evaluate(
+            EvaluationContext(
+                phase=Phase.TOOL_CALL,
+                tool_name=tool,
+                content={"name": tool, "arguments": arguments},
+            )
+        )
+
+    assert (
+        await worker_call("sys_os_write", {"path": "/tmp/candidate/file", "text": "yes"})
+    ).action == PolicyAction.ALLOW
+    for tool, arguments in (
+        ("sys_os_write", {"path": "/tmp/other/file"}),
+        ("sys_os_read", {"path": "relative.py"}),
+        ("sys_os_shell", {"command": "pwd"}),
+        ("sys_os_shell", {"command": "git commit -m bypass", "cwd": "/tmp/candidate"}),
+        ("workflow_publish", {}),
+        ("sys_session_send", {}),
+    ):
+        assert (await worker_call(tool, arguments)).action == PolicyAction.DENY
+    assert (
+        await worker_call("sys_os_shell", {"command": "pwd", "cwd": "/tmp/candidate"})
+    ).action == PolicyAction.ALLOW
+    # Codex hooks carry only the command; workdir is not part of tool_input.
+    for command, expected in (
+        ("git status --short", PolicyAction.DENY),
+        ("cd /tmp/candidate && git status --short", PolicyAction.ALLOW),
+    ):
+        event = hook_payload_to_evaluation_request(
+            "PreToolUse",
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+                "cwd": "/tmp/candidate",
+            },
+        )["event"]
+        engine = build_policy_engine(
+            spec=coding.spec, conversation_id=child.id, conversation_store=coding.store
+        )
+        result = await engine.evaluate(
+            _build_evaluation_context(Phase.TOOL_CALL, event["data"], event)
+        )
+        assert result.action == expected
+    assert "`cd /tmp/candidate &&`" in dispatch["args"]
+    assert "sys_os_write or sys_os_edit" in dispatch["args"]
+    await coding.evaluate(_completion(dispatch["title"], child_id=child.id))
+    await snapshot(coding)
+    await snapshot(coding)
+    review = await coding.dispatch()
+    reviewer = coding.store.create_conversation(
+        title="worker:" + review["title"], parent_conversation_id=coding.session_id
     )
     assert (
-        policy({"type": "request", "data": {"user_content": "/workflow select one"}})["result"]
-        == "DENY"
+        await worker_call("sys_os_write", {"path": "/tmp/candidate/file"}, reviewer.id)
+    ).action == PolicyAction.DENY
+    assert (
+        await worker_call("sys_os_read", {"path": "/tmp/candidate/file"}, reviewer.id)
+    ).action == PolicyAction.ALLOW
+    assert (
+        await worker_call("sys_os_read", {"path": "/tmp/candidate/file"})
+    ).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_can_retry_after_persisted_idle(coding, monkeypatch):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"],
+        parent_conversation_id=coding.session_id,
+        labels={"omnigent.subagent.dispatch_id": "cancelled-work"},
     )
+    coding.store.set_session_live_status(child.id, "idle")
+    await coding.evaluate(_completion(dispatch["title"], child_id=child.id, status="cancelled"))
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["pending"] is None
+    assert coding.state["status"] == "blocked"
+    await coding.evaluate(_request("/workflow retry"))
+    await snapshot(coding)
+    new = await coding.dispatch()
+    assert new["title"] != dispatch["title"]
+
+
+@pytest.mark.asyncio
+async def test_rechecking_selection_preserves_rejected_candidates(coding):
+    await begin(coding, publish=False, ids=("one", "two"))
+    while coding.state["current"].startswith("one/"):
+        await finish(coding)
+    await finish(coding, outcome="BLOCKED")
+    await coding.evaluate(_request("/workflow reject two unsuitable"))
+    await coding.evaluate(_request("/workflow select one"))
+    await snapshot(coding, "changed-after-selection")
+    await snapshot(coding, "changed-after-selection")
+    for stage in STAGES[1:]:
+        if not stage.endswith("-b-spec"):
+            await finish(coding, revision="changed-after-selection")
+    assert coding.state["status"] == "waiting-user"
+    assert coding.state["current"] is None
+    assert coding.state["rejected"] == {"two": "unsuitable"}
+    assert coding.state["verified"] == {"one": "changed-after-selection"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_findings", [None, "none", [{"id": "broken"}]])
+async def test_invalid_parallel_report_cannot_leave_half_accepted_evidence(coding, bad_findings):
+    await begin(coding)
+    for _ in range(4):
+        await finish(coding)
+    standards, spec = await coding.dispatch(), await coding.dispatch()
+    await coding.evaluate(_completion(standards["title"], child_id="standards-child"))
+    ctx = _completion(spec["title"], child_id="spec-child")
+    report = json.loads(ctx.content["result"])
+    if bad_findings is None:
+        report.pop("findings")
+    else:
+        report["findings"] = bad_findings
+    ctx.content["result"] = json.dumps(report)
+    await coding.evaluate(ctx)
+    await snapshot(coding)
+    assert coding.state["status"] == "blocked"
+    assert not any(key.startswith("one/review-b-") for key in coding.state["completed"])
+    await coding.evaluate(_request("/workflow retry"))
+    await snapshot(coding)
+    retry = await coding.dispatch()
+    assert "standards" in retry["title"]
+    assert coding.state["parallel"]["next"] == "one/review-b-spec"

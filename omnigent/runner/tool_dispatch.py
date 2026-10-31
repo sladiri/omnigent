@@ -2137,6 +2137,35 @@ def _subagent_harness(sub_agent_name: str, agent_spec: AgentSpec | None) -> str 
     return spec_harness(sub_spec) if sub_spec is not None else None
 
 
+def _validated_subagent_workspace(
+    workspace: str, sub_agent_name: str, agent_spec: AgentSpec | None
+) -> str:
+    """Validate a named child's workspace on its current runner.
+
+    :param workspace: Requested absolute directory on the runner.
+    :param sub_agent_name: Declared child whose cwd boundary applies.
+    :param agent_spec: Parent spec; supplies cwd when the child omits it.
+    :returns: Canonical existing workspace directory.
+    :raises OSError, ValueError: The directory or boundary is invalid.
+    """
+    from omnigent.server.routes._workspace_validation import _is_relative_cwd
+
+    resolved = Path(workspace).resolve(strict=True)
+    if not resolved.is_dir():
+        raise ValueError("workspace must be an existing directory")
+    child_spec = _find_subagent_spec(sub_agent_name, agent_spec)
+    cwd = getattr(getattr(child_spec, "os_env", None), "cwd", None)
+    if cwd is None:
+        cwd = getattr(getattr(agent_spec, "os_env", None), "cwd", None)
+    if cwd is not None and not _is_relative_cwd(cwd):
+        boundary = Path(cwd).expanduser().resolve(strict=True)
+        if not boundary.is_dir() or not resolved.is_relative_to(boundary):
+            raise ValueError(f"workspace is outside the agent's required directory {cwd!r}")
+    elif cwd and cwd.startswith("./") and cwd != "./" and not (resolved / cwd[2:]).is_dir():
+        raise ValueError(f"workspace lacks the agent's required subdirectory {cwd!r}")
+    return str(resolved)
+
+
 def _subagent_harness_override_from_args(args: _JsonObject) -> str | None:
     """
     Extract a per-dispatch harness override from ``sys_session_send`` args.
@@ -2515,10 +2544,18 @@ async def _execute_subagent_tool(
     except (ValueError, TypeError) as exc:
         return f"Error: sys_session_send invalid 'cost_budget': {exc}"
 
+    workspace = args.get("workspace")
+    if workspace is not None and (
+        not isinstance(workspace, str) or not workspace or not Path(workspace).is_absolute()
+    ):
+        return "Error: sys_session_send 'workspace' must be an absolute directory path"
+
     # By-session-id mode: post to an existing direct child instead of
     # spawning/continuing a named (agent, title) sub-agent.
     target_session_id = args.get("session_id")
     if isinstance(target_session_id, str) and target_session_id:
+        if workspace is not None:
+            return "Error: sys_session_send 'workspace' applies only when creating a named child"
         # Fail loud on a double-addressed send. The two modes can point at
         # different children, so silently letting session_id win would
         # misroute the message with no signal to the caller.
@@ -2634,6 +2671,11 @@ async def _execute_subagent_tool(
         child_session_id = existing.get("id")
         if not isinstance(child_session_id, str) or not child_session_id:
             return "Error: existing child session is missing id"
+        if workspace is not None:
+            return (
+                "Error: sys_session_send 'workspace' applies only when creating a named child; "
+                f"re-send without 'workspace' to continue {child_session_id!r}"
+            )
         if model is not None:
             # A native child bakes --model in at terminal launch, so a
             # mid-conversation override would be silently ignored there.
@@ -2708,6 +2750,13 @@ async def _execute_subagent_tool(
                 created_by=dispatch_created_by,
             )
     else:
+        if isinstance(workspace, str):
+            try:
+                workspace = await asyncio.to_thread(
+                    _validated_subagent_workspace, workspace, sub_agent_name, agent_spec
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"Error: sys_session_send invalid 'workspace': {exc}"
         _auto_ordinal = False
         if not session_name:
             # No title hint — auto-generate a structured session name
@@ -2811,6 +2860,8 @@ async def _execute_subagent_tool(
             "sub_agent_name": sub_agent_name,
             "labels": {_subagent_work.SUBAGENT_DISPATCH_ID_LABEL_KEY: work_id},
         }
+        if workspace is not None:
+            create_body["workspace"] = workspace
         if harness_override_canonical is not None:
             create_body["harness_override"] = harness_override_canonical
         if model is not None:

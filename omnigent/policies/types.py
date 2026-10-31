@@ -204,6 +204,8 @@ class EvaluationContext:
     :param conversation_id: The conversation this evaluation belongs
         to. Surfaced as ``event["context"]["conversation_id"]``.
         ``None`` only in contexts with no engine.
+    :param root_conversation_id: Verified root of the session tree, supplied
+        by the engine so inherited policies can distinguish workers.
     :param turn_final: On ``RESPONSE``, the runner relay sets ``True`` for
         the final text segment of a successful turn and ``False`` for
         intermediate segments or failed, cancelled, and incomplete turns.
@@ -227,6 +229,7 @@ class EvaluationContext:
     labels: dict[str, str] | None = None
     llm_client: PolicyLLMClient | None = None
     conversation_id: str | None = None
+    root_conversation_id: str | None = None
     turn_final: bool | None = None
 
 

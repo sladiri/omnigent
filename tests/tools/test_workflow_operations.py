@@ -1,0 +1,392 @@
+"""Host workflow operations against isolated real Git worktrees."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from omnigent.workflows import operations
+
+
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    operations._git(repo, "init", "--initial-branch=main")
+    operations._git(repo, "config", "user.name", "Workflow Test")
+    operations._git(repo, "config", "user.email", "workflow@example.invalid")
+    (repo / "hello.txt").write_text("hello\n")
+    (repo / ".gitignore").write_text("ignored\n")
+    operations._git(repo, "add", ".")
+    operations._git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "baseline")
+    return repo
+
+
+def _definition(repository: Path) -> dict:
+    return {
+        "repository": str(repository),
+        "task": "Improve hello",
+        "run_id": "test-run",
+        "worktree_setup": False,
+        "candidates": [
+            {"id": "alpha", "task": "Add greeting"},
+            {"id": "beta", "task": "Add farewell"},
+        ],
+    }
+
+
+def _snapshot(repository: Path) -> dict:
+    return json.loads(operations.workflow_snapshot(str(repository)))
+
+
+def test_snapshot_covers_working_contents_and_is_stable_across_commit(repository: Path) -> None:
+    before = _snapshot(repository)
+    (repository / "ignored").write_text("does not count")
+    assert _snapshot(repository)["revision"] == before["revision"]
+    (repository / "hello.txt").write_text("new hello\n")
+    unstaged = _snapshot(repository)
+    assert unstaged["revision"] != before["revision"]
+    (repository / "new.txt").write_text("untracked\n")
+    (repository / " leading-name ").write_text("whitespace name\n")
+    untracked = _snapshot(repository)
+    assert untracked["revision"] != unstaged["revision"]
+    operations._git(repository, "add", "--all")
+    assert _snapshot(repository)["revision"] == untracked["revision"]
+    operations._git(repository, "-c", "commit.gpgsign=false", "commit", "-m", "change")
+    assert _snapshot(repository)["revision"] == untracked["revision"]
+    (repository / "hello.txt").chmod(0o755)
+    assert _snapshot(repository)["revision"] != untracked["revision"]
+    (repository / "new.txt").unlink()
+    deleted = _snapshot(repository)["revision"]
+    operations._git(repository, "add", "--all")
+    operations._git(repository, "-c", "commit.gpgsign=false", "commit", "-m", "delete")
+    assert _snapshot(repository)["revision"] == deleted
+
+
+def test_prepare_recovers_owned_worktrees_and_preserves_candidate_changes(
+    repository: Path,
+) -> None:
+    definition = _definition(repository)
+    prepared = json.loads(operations.workflow_prepare(definition))
+    alpha, beta = prepared["candidates"]
+    alpha_path, beta_path = Path(alpha["workspace"]), Path(beta["workspace"])
+    assert alpha_path != beta_path
+    assert _snapshot(alpha_path)["head"] == prepared["baseline"]
+    (alpha_path / "hello.txt").write_text("candidate work\n")
+    assert json.loads(operations.workflow_prepare(definition)) == prepared
+    assert (alpha_path / "hello.txt").read_text() == "candidate work\n"
+    assert (beta_path / "hello.txt").read_text() == "hello\n"
+    assert (repository / "hello.txt").read_text() == "hello\n"
+    with pytest.raises(ValueError, match="definition changed"):
+        operations.workflow_prepare({**definition, "task": "Something else"})
+
+
+def test_prepare_refuses_dirty_baseline_and_unowned_branch(repository: Path) -> None:
+    definition = _definition(repository)
+    (repository / "hello.txt").write_text("unrelated user work")
+    with pytest.raises(ValueError, match="unrelated changes"):
+        operations.workflow_prepare(definition)
+    (repository / "hello.txt").write_text("hello\n")
+    for duplicate in (
+        {"branch": "workflow/duplicate"},
+        {"workspace": str(repository.parent / "duplicate")},
+        {"workspace": str(repository)},
+    ):
+        invalid = {
+            **definition,
+            "candidates": [{**candidate, **duplicate} for candidate in definition["candidates"]],
+        }
+        with pytest.raises(ValueError, match="distinct branches and isolated worktrees"):
+            operations.workflow_prepare(invalid)
+    operations._git(repository, "branch", "workflow/test-run/alpha")
+    with pytest.raises(ValueError, match="ownership"):
+        operations.workflow_prepare(definition)
+
+
+def test_prepare_runs_setup_helper_before_return(repository: Path, tmp_path: Path) -> None:
+    helper = tmp_path / "setup.py"
+    helper.write_text(
+        "import pathlib,sys\n(pathlib.Path(sys.argv[1]) / '.setup').write_text('ready')\n"
+    )
+    definition = {**_definition(repository), "worktree_setup": str(helper)}
+    prepared = json.loads(operations.workflow_prepare(definition))
+    assert all(
+        (Path(candidate["workspace"]) / ".setup").read_text() == "ready"
+        for candidate in prepared["candidates"]
+    )
+
+
+def test_prepare_reuses_explicit_existing_and_moved_owned_worktree(
+    repository: Path, tmp_path: Path
+) -> None:
+    existing = tmp_path / "unrelated-directory-name"
+    operations._git(repository, "worktree", "add", "-b", "feature/greeting", str(existing))
+    definition = {
+        **_definition(repository),
+        "candidates": [
+            {
+                "id": "alpha",
+                "task": "Greeting",
+                "branch": "feature/greeting",
+                "workspace": str(existing),
+            }
+        ],
+    }
+    prepared = json.loads(operations.workflow_prepare(definition))
+    assert prepared["candidates"][0]["workspace"] == str(existing)
+    (existing / "hello.txt").write_text("owned work")
+    moved = tmp_path / "moved-candidate"
+    operations._git(repository, "worktree", "move", str(existing), str(moved))
+    resumed = json.loads(operations.workflow_prepare(definition))
+    assert resumed["candidates"][0]["workspace"] == str(moved)
+    assert (moved / "hello.txt").read_text() == "owned work"
+
+
+@pytest.mark.parametrize("lost_response_stage", ["commit", "push", "pr"])
+def test_publish_reconciles_commit_push_and_created_pr_after_lost_response(
+    repository: Path, monkeypatch: pytest.MonkeyPatch, lost_response_stage: str
+) -> None:
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    operations._git(workspace, "remote", "add", "origin", "git@github.com:upstream/test.git")
+    operations._git(
+        workspace, "remote", "set-url", "--push", "origin", "git@github.com:example/test.git"
+    )
+    (workspace / "hello.txt").write_text("reviewed change\n")
+    revision = _snapshot(workspace)["revision"]
+    original = operations._run
+    calls = []
+    published = {"pushed": False, "pr": False, "state": "OPEN"}
+    monkeypatch.setattr(operations.shutil, "which", lambda _: "/test/pre-commit")
+
+    def run(path, *args, env=None):
+        calls.append(args)
+        if args[:3] == ("git", "--no-pager", "commit"):
+            assert env.get("GPG_TTY") is None
+            result = original(
+                path,
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "--no-pager",
+                "commit",
+                "-s",
+                "-m",
+                args[-1],
+            )
+            if lost_response_stage == "commit":
+                raise RuntimeError("lost response after commit")
+            return result
+        if args[:3] == ("git", "--no-pager", "verify-commit"):
+            return ""
+        if args[:3] == ("git", "--no-pager", "push"):
+            published["pushed"] = True
+            if lost_response_stage == "push":
+                raise RuntimeError("lost response after push")
+            return ""
+        if args[0] == "/test/pre-commit":
+            return ""
+        if args[:2] == ("gh", "api"):
+            assert args[2].startswith("repos/example/test/")
+            head = original(path, "git", "rev-parse", "HEAD")
+            if "matching-refs" in args[2]:
+                return json.dumps(
+                    [
+                        {
+                            "ref": f"refs/heads/{prepared['candidates'][0]['branch']}",
+                            "object": {"sha": head},
+                        }
+                    ]
+                    if published["pushed"]
+                    else []
+                )
+            return json.dumps({"object": {"sha": head}})
+        if args[:3] == ("gh", "pr", "list"):
+            assert args[args.index("--repo") + 1] == "example/test"
+            return json.dumps(
+                [
+                    {
+                        "url": "https://github.com/example/test/pull/1",
+                        "state": published["state"],
+                        "headRefOid": original(path, "git", "rev-parse", "HEAD"),
+                    }
+                ]
+                if published["pr"]
+                else []
+            )
+        if args[:3] == ("gh", "pr", "create"):
+            assert args[args.index("--repo") + 1] == "example/test"
+            assert Path(args[-1]).read_text() == "Reviewed change and test evidence"
+            published["pr"] = True
+            if lost_response_stage == "pr":
+                raise RuntimeError("lost response after PR creation")
+            return "https://github.com/example/test/pull/1"
+        return original(path, *args, env=env)
+
+    monkeypatch.setattr(operations, "_run", run)
+    monkeypatch.setattr(operations, "_desktop_environment", lambda _: {"DISPLAY": ":test"})
+    params = (
+        str(workspace),
+        revision,
+        "TEST-1 feat: improve hello",
+        "Reviewed change and test evidence",
+        "main",
+    )
+    with pytest.raises(RuntimeError, match="lost response"):
+        operations.workflow_publish(*params)
+    result = json.loads(operations.workflow_publish(*params))
+    assert result["pr_url"] == "https://github.com/example/test/pull/1"
+    assert json.loads(operations.workflow_publish(*params)) == result
+    assert sum(args[:3] == ("git", "--no-pager", "commit") for args in calls) == 1
+    assert sum(args[:3] == ("git", "--no-pager", "push") for args in calls) == 1
+    assert sum(args[:3] == ("gh", "pr", "create") for args in calls) == 1
+    operations._git(
+        workspace, "remote", "set-url", "--push", "origin", "git@github.com:another/test.git"
+    )
+    with pytest.raises(ValueError, match="Publication parameters changed"):
+        operations.workflow_publish(*params)
+    operations._git(
+        workspace, "remote", "set-url", "--push", "origin", "git@github.com:example/test.git"
+    )
+    published.update(state="CLOSED", pushed=False)
+    with pytest.raises(ValueError, match="refusing to recreate"):
+        operations.workflow_publish(*params)
+    published["state"] = "MERGED"
+    assert json.loads(operations.workflow_publish(*params)) == result
+    assert not published["pushed"]
+    assert sum(args[:3] == ("git", "--no-pager", "push") for args in calls) == 1
+    assert sum(args[:3] == ("gh", "pr", "create") for args in calls) == 1
+    (workspace / "hello.txt").write_text("unreviewed change")
+    with pytest.raises(ValueError, match="Reviewed contents changed"):
+        operations.workflow_publish(*params)
+
+
+def test_publish_refuses_multiple_push_destinations(repository: Path) -> None:
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    operations._git(workspace, "remote", "add", "origin", "git@github.com:example/test.git")
+    for owner in ("example", "another"):
+        operations._git(
+            workspace,
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            f"git@github.com:{owner}/test.git",
+        )
+    (workspace / "hello.txt").write_text("reviewed change\n")
+    snapshot = _snapshot(workspace)
+    with pytest.raises(ValueError, match="single push destination"):
+        operations.workflow_publish(
+            str(workspace), snapshot["revision"], "TEST-1 feat: improve hello", "Evidence", "main"
+        )
+    assert _snapshot(workspace) == snapshot
+
+
+def test_publish_checks_new_files_before_committing(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repository / ".pre-commit-config.yaml").write_text(
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: reject-python\n"
+        "        name: reject-python\n"
+        "        language: system\n"
+        "        entry: /usr/bin/env python3 -c 'raise SystemExit(1)'\n"
+        "        types: [python]\n"
+    )
+    operations._git(repository, "add", "--all")
+    operations._git(repository, "-c", "commit.gpgsign=false", "commit", "-m", "add hook")
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    operations._git(workspace, "remote", "add", "origin", "git@github.com:example/test.git")
+    (workspace / "new.py").write_text("new source\n")
+    snapshot = _snapshot(workspace)
+    original = operations._run
+
+    def run(path, *args, env=None):
+        assert args[:3] != ("git", "--no-pager", "commit"), "Unchecked file reached commit"
+        return original(path, *args, env=env)
+
+    monkeypatch.setattr(operations, "_run", run)
+    monkeypatch.setattr(operations, "_desktop_environment", lambda _: {"DISPLAY": ":test"})
+    monkeypatch.setattr(
+        operations.shutil, "which", lambda _: str(Path(sys.executable).with_name("pre-commit"))
+    )
+    monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "pre-commit"))
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        operations.workflow_publish(
+            str(workspace), snapshot["revision"], "TEST-1 feat: improve hello", "Evidence", "main"
+        )
+    assert b"reject-python" in failed.value.stdout
+    assert _snapshot(workspace) == snapshot
+
+
+def test_publish_stops_if_commit_hook_changes_reviewed_tree(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    operations._git(workspace, "remote", "add", "origin", "git@github.com:example/test.git")
+    (workspace / "hello.txt").write_text("reviewed change\n")
+    revision = _snapshot(workspace)["revision"]
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text(
+        "#!/usr/bin/env bash\nprintf 'unreviewed hook change\\n' > hello.txt\ngit add hello.txt\n"
+    )
+    hook.chmod(0o755)
+    operations._git(workspace, "config", "core.hooksPath", str(hooks))
+    original = operations._run
+
+    def run(path, *args, env=None):
+        if args[:3] == ("git", "--no-pager", "commit"):
+            return original(path, "git", "-c", "commit.gpgsign=false", "commit", "-m", args[-1])
+        if args[0] == "/test/pre-commit" or args[:3] == ("git", "--no-pager", "verify-commit"):
+            return ""
+        assert args[0] != "gh" and args[:3] != ("git", "--no-pager", "push")
+        return original(path, *args, env=env)
+
+    monkeypatch.setattr(operations, "_run", run)
+    monkeypatch.setattr(operations.shutil, "which", lambda _: "/test/pre-commit")
+    monkeypatch.setattr(operations, "_desktop_environment", lambda _: {"DISPLAY": ":test"})
+    with pytest.raises(ValueError, match="Commit hooks changed the reviewed tree"):
+        operations.workflow_publish(
+            str(workspace), revision, "TEST-1 feat: improve hello", "Reviewed change", "main"
+        )
+    assert not _snapshot(workspace)["dirty"]
+    assert _snapshot(workspace)["revision"] != revision
+
+
+def test_desktop_environment_reads_session_and_removes_terminal_pinentry(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in (
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XAUTHORITY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GPG_TTY", "/dev/pts/test")
+    monkeypatch.setattr(
+        operations,
+        "_run",
+        lambda *_: (
+            "DISPLAY=:test\nXAUTHORITY=/tmp/rotating-auth\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/test/bus"
+        ),
+    )
+    environment = operations._desktop_environment(repository)
+    assert environment["DISPLAY"] == ":test"
+    assert environment["XAUTHORITY"] == "/tmp/rotating-auth"
+    assert "GPG_TTY" not in environment
+    assert os.environ["GPG_TTY"] == "/dev/pts/test"

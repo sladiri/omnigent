@@ -186,6 +186,8 @@ class EventContext(TypedDict, total=False):
     :param conversation_id: The conversation this event belongs to.
         Injected by the engine, which already owns this identity.
         Read via ``event["context"]["conversation_id"]``.
+    :param root_conversation_id: Verified root of the session tree. Inherited
+        policies compare it with conversation_id to distinguish workers.
     :param turn_final: On ``RESPONSE``, the runner relay sets ``True`` for
         the final text segment of a successful turn and ``False`` for
         intermediate segments or failed, cancelled, and incomplete turns.
@@ -209,6 +211,7 @@ class EventContext(TypedDict, total=False):
     # ``str | None``: the value is ``ctx.conversation_id``, injected by the
     # engine. ``None`` only in contexts with no engine.
     conversation_id: str | None
+    root_conversation_id: str | None
     # RESPONSE policies skip only explicit False for completion actions;
     # None preserves callers that do not distinguish segments.
     turn_final: bool | None
