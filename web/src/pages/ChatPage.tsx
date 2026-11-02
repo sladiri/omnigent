@@ -3823,7 +3823,14 @@ function ComposerImpl(
                 composerLockedByBtw ||
                 savingSubmitEffort
               }
-              onInsert={insertPrompt}
+              draft={draft.quotes[0]?.before ?? draft.text}
+              onChange={(text) => {
+                editText(draft.quotes[0]?.id ?? null, text);
+                dirtyRef.current = true;
+                resetCursor();
+                if (commandError !== null) setCommandError(null);
+                textareaRef.current?.focus();
+              }}
             />
           ),
           inputPrefix:

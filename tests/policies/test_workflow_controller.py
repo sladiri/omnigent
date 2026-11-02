@@ -881,3 +881,45 @@ async def test_review_button_binds_review_only_and_requires_one_candidate(coding
         await coding.evaluate(_request("/workflow start " + json.dumps(definition)))
     ).action == PolicyAction.ALLOW
     assert coding.state["definition"]["workflow"] == "review-fix"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "compare-review-fix", "review-fix"])
+async def test_idle_controller_drafts_valid_start_without_advancing(coding, workflow):
+    from omnigent.workflows.controller import draft_start_message
+
+    await coding.evaluate(
+        _request(f"Prepare the start message for `{workflow}` using the task below.\nTask")
+    )
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "workflow_draft" in status["next_action"]
+    args = {
+        "workflow": workflow,
+        "repository": "/tmp/repository",
+        "task": "Task",
+        "baseline": "main",
+        "base": "main",
+        "publish": False,
+    }
+    call = EvaluationContext(
+        phase=Phase.TOOL_CALL,
+        tool_name="workflow_draft",
+        content={"name": "workflow_draft", "arguments": args},
+    )
+    assert (await coding.evaluate(call)).action == PolicyAction.ALLOW
+    draft = json.loads(draft_start_message(**args))
+    assert draft["valid"] is True
+    await coding.evaluate(output("workflow_draft", draft))
+    assert coding.state["status"] == "idle"
+    assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
+    assert (await coding.evaluate(_call("sys_session_send"))).action == PolicyAction.DENY
+    bad = json.loads(draft_start_message(**{**args, "baseline": ""}))
+    assert bad["valid"] is False and "baseline" in bad["error"]
+    assert "command" not in bad
+    call.content["arguments"]["workflow"] = (
+        "review-fix" if workflow != "review-fix" else "implement-review-fix"
+    )
+    assert (await coding.evaluate(call)).action == PolicyAction.DENY
+    assert (await coding.evaluate(_request(draft["command"]))).action == PolicyAction.ALLOW
+    assert coding.state["definition"]["publish"] is False
+    assert (await coding.evaluate(call)).action == PolicyAction.DENY
