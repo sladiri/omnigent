@@ -16,6 +16,10 @@ export function WorkflowPromptButtons({
     <>
       {[
         {
+          label: "review",
+          prompt: "Prepare the start message for `review-fix` using the task below.",
+        },
+        {
           label: "implement",
           prompt: "Prepare the start message for `implement-review-fix` using the task below.",
         },

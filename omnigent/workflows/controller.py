@@ -17,6 +17,7 @@ from omnigent.workflows import comparison
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
 STATE_KEY = "workflow_controller"
+WORKFLOWS = (comparison.NAME, "implement-review-fix", "review-fix")
 POLICY_REGISTRY = [
     {
         "handler": "omnigent.workflows.controller.make_controller",
@@ -125,14 +126,17 @@ def _advance_candidate(state: Json) -> None:
     state.pop("review_wait", None)
     state["findings"] = {}
     if remaining:
-        _set_stage(state, remaining, "implement")
+        first_stage = (
+            "review-a" if state["definition"]["workflow"] == "review-fix" else "implement"
+        )
+        _set_stage(state, remaining, first_stage)
     elif comparison.enabled(state):
         comparison.analysis_stage(state, "compare-results")
     else:
         state.update(
             status="waiting-user" if state["verified"] else "blocked",
             current=None,
-            question="Compare the candidate evidence, then send /workflow select <id>"
+            question="Review the candidate evidence, then send /workflow select <id>"
             if state["verified"]
             else "No viable candidate remains; start a new workflow",
         )
@@ -159,10 +163,12 @@ def _definition(raw: str, conversation_id: str) -> Json:
         if isinstance(candidates, list) and len(candidates) > 1
         else "implement-review-fix",
     )
-    if workflow not in {comparison.NAME, "implement-review-fix"}:
+    if workflow not in WORKFLOWS:
         raise ValueError("Unknown workflow")
     if not isinstance(candidates, list) or (not candidates and workflow != comparison.NAME):
         raise ValueError("Definition needs candidates")
+    if workflow == "review-fix" and len(candidates) != 1:
+        raise ValueError("Review needs exactly one current implementation")
     ids = []
     for candidate in candidates:
         if not isinstance(candidate, dict) or not re.fullmatch(
@@ -579,7 +585,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 return {"result": "ALLOW"}
             text = request_user_text(event.get("data")).strip()
             if state["status"] == "idle":
-                for name in (comparison.NAME, "implement-review-fix"):
+                for name in WORKFLOWS:
                     if text.startswith(
                         f"Prepare the start message for `{name}` using the task below."
                     ):
@@ -873,7 +879,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     return _block(state, "Prepared candidates differ from approved designs")
             state["candidates"] = result["candidates"]
             state["pr_template"] = result.get("pr_template", "")
-            _set_stage(state, state["candidates"][0], "implement")
+            _advance_candidate(state)
             return _result(state)
         if target == "workflow_snapshot" and state["status"] == "snapshot":
             try:

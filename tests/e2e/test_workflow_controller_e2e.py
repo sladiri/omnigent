@@ -94,9 +94,9 @@ def _mock_bundle(destination: Path, child_model: str, mock_base: str) -> Path:
 
 
 @pytest.mark.timeout(360)
-@pytest.mark.parametrize("compare", [False, True], ids=["implement", "compare"])
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "compare-review-fix", "review-fix"])
 def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
-    compare: bool,
+    workflow: str,
     http_client: httpx.Client,
     live_runner_id: str,
     mock_llm_server_url: str,
@@ -104,6 +104,8 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     tmp_path: Path,
 ) -> None:
     """Real worker tools and snapshots pass all gates; only publication is faked."""
+    compare, review = workflow == "compare-review-fix", workflow == "review-fix"
+    first_stage = "review-a" if review else "implement"
     reset_mock_llm(mock_llm_server_url)
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -123,6 +125,9 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         check=True,
         capture_output=True,
     )
+    if review:
+        (repository / "greeting.txt").write_text("hello\n")
+        (repository / "existing.txt").write_text("untracked work\n")
     suffix = uuid.uuid4().hex[:8]
     parent_model, child_model = f"full-controller-{suffix}", f"full-worker-{suffix}"
     bundle = _mock_bundle(tmp_path / "full-controller", child_model, f"{mock_llm_server_url}/v1")
@@ -163,7 +168,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         return _tool("workflow_snapshot", call_id, {"workspace": "/ignored-by-policy"})
 
     definition = {
-        "workflow": "compare-review-fix" if compare else "implement-review-fix",
+        "workflow": workflow,
         "repository": str(repository),
         "task": "Replace before with hello in greeting.txt.",
         "baseline": "HEAD",
@@ -239,7 +244,9 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 "Expected tradeoffs only" in presentation
                 and "Expected risks for a" in presentation
             )
-            assert (repository / "greeting.txt").read_text() == "before\n"
+            assert (repository / "greeting.txt").read_text() == (
+                "hello\n" if review else "before\n"
+            )
             trees = subprocess.check_output(
                 ["/usr/bin/env", "git", "worktree", "list", "--porcelain"],
                 cwd=repository,
@@ -297,7 +304,11 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     assert state["status"] == "ready", json.dumps(items)
     candidate = state["candidates"][0]
     workspace = Path(candidate["workspace"])
-    assert workspace != repository and (workspace / "greeting.txt").read_text() == "before\n"
+    assert (workspace == repository) == review
+    assert (workspace / "greeting.txt").read_text() == ("hello\n" if review else "before\n")
+    assert state["current"] == "a/" + first_stage
+    if review:
+        assert (workspace / "existing.txt").read_text() == "untracked work\n"
     if compare:
         assert [c["id"] for c in state["candidates"]] == ["a"]
         assert state["designs"]["approved"] == ["a"]
@@ -313,7 +324,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
             {
                 "text": json.dumps(
                     {
-                        "stage": "a/implement",
+                        "stage": "a/" + first_stage,
                         "outcome": "NEEDS_INPUT",
                         "evidence": "The greeting language needs confirmation.",
                         "question": "Which language should the greeting use?",
@@ -322,7 +333,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 "block": True,
             },
         ],
-        match="Stage: implement\n",
+        match=f"Stage: {first_stage}\n",
     )
     configure_mock_llm(
         mock_llm_server_url,
@@ -335,9 +346,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         ],
         key=parent_model,
     )
-    send_user_message_to_session(
-        http_client, session_id=session_id, content="Begin implementation."
-    )
+    send_user_message_to_session(http_client, session_id=session_id, content="Begin the workflow.")
     _wait_for_text(http_client, session_id, "QUESTION_DISPATCHED")
     _release_worker(mock_llm_server_url)
     items = _wait_for_text(http_client, session_id, "QUESTION_WAITING")
@@ -369,6 +378,8 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         ("verify-c",),
         ("final-b-standards", "final-b-spec"),
     )
+    if review:
+        groups = groups[1:]
     stages = [stage for group in groups for stage in group]
     for index, group in enumerate(groups):
         marker = group[0]
@@ -511,7 +522,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 )
                 resumed = _status(answered, "review-answer-status")
                 assert resumed["status"] == "ready" and resumed["current"] == "a/fix-a"
-        assert (repository / "greeting.txt").read_text() == "before\n"
+        assert (repository / "greeting.txt").read_text() == ("hello\n" if review else "before\n")
         assert not publication_record.exists()
 
     if compare:

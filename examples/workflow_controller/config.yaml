@@ -1,6 +1,6 @@
 spec_version: 1
 name: workflow-controller
-description: Implement isolated candidates, enforce review gates, and publish only the selected result.
+description: Implement candidates or review existing work, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
   config:
@@ -9,7 +9,13 @@ prompt: |
   Coordinate the user's coding workflow. The policy owns stage order, worktrees,
   worker briefs, review gates, selection, and publication permissions.
   When preparing a start message, include workflow: compare-review-fix for Compare
-  or implement-review-fix for Implement. Compare candidate suggestions are optional.
+  or implement-review-fix for Implement, or review-fix for Review.
+  Review uses the current implementation: repository must be its existing worktree,
+  with one candidate (id: current), and baseline must precede the changes to review.
+  Include committed, staged, unstaged, and untracked task changes; ask if scope or
+  baseline is unclear. It starts at review-a and reuses the review/fix stages without
+  implementation. Fixes stay in that worktree. Default publish to false for Review
+  unless the user explicitly requests publication. Compare candidate suggestions are optional.
   Compare first dispatches read-only exploration using compare-solutions guidance.
   In waiting-design-selection or waiting-final-selection, call workflow_present,
   copy its complete comparison and decision commands into your reply, and stop.

@@ -6190,7 +6190,7 @@ describe("workflow prompt visibility", () => {
           <Composer {...props} selectedAgentId={selectedAgentId} />
         </TooltipProvider>,
       );
-      for (const name of ["implement", "compare"]) {
+      for (const name of ["implement", "compare", "review"]) {
         expect(screen.queryByRole("button", { name }) !== null).toBe(
           selectedAgentId === "controller",
         );
@@ -6203,11 +6203,11 @@ describe("workflow prompt visibility", () => {
         <Composer {...props} selectedAgentId="controller" />
       </TooltipProvider>,
     );
-    for (const workflow of ["implement", "compare"]) {
+    for (const workflow of ["implement", "compare", "review"]) {
       fireEvent.change(textarea(), { target: { value: "My task" } });
       fireEvent.click(screen.getByRole("button", { name: workflow }));
       expect(textarea()).toHaveValue(
-        `Prepare the start message for \`${workflow}-review-fix\` using the task below.\n\nMy task`,
+        `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
       );
       expect(textarea()).toHaveFocus();
     }

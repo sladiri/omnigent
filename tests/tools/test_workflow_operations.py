@@ -86,6 +86,55 @@ def test_prepare_recovers_owned_worktrees_and_preserves_candidate_changes(
         operations.workflow_prepare({**definition, "task": "Something else"})
 
 
+def test_review_prepare_preserves_current_implementation_and_recovers(
+    repository: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "current-worktree"
+    operations._git(repository, "worktree", "add", "-b", "feature/current", str(workspace))
+    (workspace / "committed.txt").write_text("already implemented\n")
+    operations._git(workspace, "add", ".")
+    operations._git(workspace, "-c", "commit.gpgsign=false", "commit", "-m", "implementation")
+    (workspace / "hello.txt").write_text("staged implementation\n")
+    operations._git(workspace, "add", ".")
+    (workspace / "hello.txt").write_text("unstaged implementation\n")
+    (workspace / "new.txt").write_text("untracked implementation\n")
+    before = _snapshot(workspace)
+    index = operations._git(workspace, "diff", "--cached")
+    trees = operations._git(repository, "worktree", "list", "--porcelain")
+    definition = {
+        **_definition(workspace),
+        "workflow": "review-fix",
+        "baseline": "main",
+        "candidates": [{"id": "current", "task": "Review current implementation"}],
+    }
+    prepared = json.loads(operations.workflow_prepare(definition))
+    candidate = prepared["candidates"][0]
+    assert candidate["workspace"] == str(workspace)
+    assert candidate["branch"] == "feature/current"
+    assert candidate["baseline"] == operations._git(repository, "rev-parse", "main")
+    assert candidate["baseline"] != before["head"]
+    assert json.loads(operations.workflow_prepare(definition)) == prepared
+    assert _snapshot(workspace) == before
+    assert operations._git(workspace, "diff", "--cached") == index
+    assert operations._git(repository, "worktree", "list", "--porcelain") == trees
+    operations._git(workspace, "switch", "-c", "other")
+    with pytest.raises(ValueError, match="Review worktree or branch changed"):
+        operations.workflow_prepare(definition)
+
+
+@pytest.mark.parametrize("invalid", ["multiple", "branch", "workspace", "detached"])
+def test_review_prepare_refuses_ambiguous_target(repository: Path, invalid: str) -> None:
+    definition = {**_definition(repository), "workflow": "review-fix"}
+    if invalid != "multiple":
+        definition["candidates"] = definition["candidates"][:1]
+    if invalid in {"branch", "workspace"}:
+        definition["candidates"][0][invalid] = "another"
+    if invalid == "detached":
+        operations._git(repository, "checkout", "--detach")
+    with pytest.raises(ValueError, match="Review"):
+        operations.workflow_prepare(definition)
+
+
 def test_revised_design_uses_a_new_worktree_and_preserves_prior_work(repository: Path) -> None:
     definition = _definition(repository)
     first = {**definition, "run_id": "a" * 32 + "-designs-1"}

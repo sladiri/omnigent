@@ -128,12 +128,15 @@ def _worktrees(repository: Path) -> dict[str, Path]:
 
 
 def workflow_prepare(definition: dict[str, Any]) -> str:
-    """Create or recover this run's isolated candidate worktrees without moving changes."""
+    """Prepare isolated implementations or bind Review to the existing worktree."""
     repository = _workspace(definition["repository"])
     run_id = definition["run_id"]
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", run_id):
         raise ValueError("run_id must be a lowercase identifier")
     candidates = definition["candidates"]
+    review = definition.get("workflow") == "review-fix"
+    if review and len(candidates) != 1:
+        raise ValueError("Review needs exactly one current implementation")
     ids = [candidate["id"] for candidate in candidates]
     if (
         not ids
@@ -151,7 +154,7 @@ def workflow_prepare(definition: dict[str, Any]) -> str:
         if state is not None and state["definition"] != fingerprint:
             raise ValueError("Run definition changed; use another run ID")
         if state is None:
-            if _git(repository, "status", "--porcelain"):
+            if not review and _git(repository, "status", "--porcelain"):
                 raise ValueError("Repository has unrelated changes; clarify ownership first")
             baseline = _git(
                 repository,
@@ -168,6 +171,26 @@ def workflow_prepare(definition: dict[str, Any]) -> str:
                 "candidates": [],
             }
             for candidate in candidates:
+                if review:
+                    branch = _git(repository, "branch", "--show-current")
+                    workspace = Path(candidate.get("workspace", repository)).expanduser().resolve()
+                    if (
+                        not branch
+                        or candidate.get("branch", branch) != branch
+                        or workspace != repository
+                    ):
+                        raise ValueError(
+                            "Review must use the repository's current branch and worktree"
+                        )
+                    state["candidates"].append(
+                        {
+                            **candidate,
+                            "workspace": str(repository),
+                            "branch": branch,
+                            "baseline": baseline,
+                        }
+                    )
+                    continue
                 branch = candidate.get("branch", f"workflow/{run_id}/{candidate['id']}")
                 _git(repository, "check-ref-format", "--branch", branch)
                 workspace = (
@@ -211,6 +234,12 @@ def workflow_prepare(definition: dict[str, Any]) -> str:
             _save(path, state)
         for candidate in state["candidates"]:
             branch, workspace = candidate["branch"], Path(candidate["workspace"])
+            if review:
+                if workspace != repository or by_branch.get(branch) != repository:
+                    raise ValueError(
+                        "Review worktree or branch changed; restore it before resuming"
+                    )
+                continue
             if branch in by_branch:
                 workspace = by_branch[branch].resolve()
                 candidate["workspace"] = str(workspace)

@@ -8408,16 +8408,17 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       selectAgent("a2");
       expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
       expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "review" })).toBeNull();
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
       fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
-      for (const workflow of ["implement", "compare"]) {
+      for (const workflow of ["implement", "compare", "review"]) {
         fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
           target: { value: "My task" },
         });
         fireEvent.click(screen.getByRole("button", { name: workflow }));
         expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-          `Prepare the start message for \`${workflow}-review-fix\` using the task below.\n\nMy task`,
+          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
         );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
       }
@@ -8425,8 +8426,9 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       selectAgent("a2");
       expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
       expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "review" })).toBeNull();
       expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-        "Prepare the start message for `compare-review-fix` using the task below.\n\nMy task",
+        "Prepare the start message for `review-fix` using the task below.\n\nMy task",
       );
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));

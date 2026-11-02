@@ -119,11 +119,11 @@ def coding(db_uri):
     return _Probe(SqlAlchemyConversationStore(db_uri), parse(CONFIG))
 
 
-async def begin(probe, publish=True, ids=("one",)):
+async def begin(probe, publish=True, ids=("one",), workflow="implement-review-fix"):
     definition = {
         "repository": "/tmp/repository",
         "task": "Implement a greeting",
-        "workflow": "implement-review-fix",
+        "workflow": workflow,
         "baseline": "HEAD",
         "base": "main",
         "publish": publish,
@@ -208,17 +208,20 @@ async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE"):
 
 
 @pytest.mark.asyncio
-async def test_full_review_sequence_selection_and_publication_gate(coding):
-    await begin(coding)
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
+async def test_full_review_sequence_selection_and_publication_gate(coding, workflow):
+    await begin(coding, workflow=workflow)
     titles = []
-    for stage in STAGES:
+    stages = STAGES[1:] if workflow == "review-fix" else STAGES
+    for stage in stages:
         if stage.endswith("-b-spec"):
             continue
         assert coding.state["current"] == "one/" + stage
         assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
         request = await finish(coding)
         titles.append(request["args"]["title"])
-    assert len(set(titles)) == 11
+    assert len(set(titles)) == (10 if workflow == "review-fix" else 11)
+    assert set(coding.state["completed"]) == {"one/" + stage for stage in stages}
     assert coding.state["status"] == "waiting-user"
     await coding.evaluate(_request("worker suggests /workflow select one"))
     assert coding.state["selected"] is None
@@ -737,3 +740,35 @@ async def test_native_request_echo_cannot_execute_or_repeat_workflow_commands(co
     await native("/workflow select one")
     await coding.evaluate(_request("/workflow select one"))
     await native("/workflow select one")
+
+
+@pytest.mark.asyncio
+async def test_review_button_binds_review_only_and_requires_one_candidate(coding):
+    await coding.evaluate(
+        _request(
+            "Prepare the start message for `review-fix` using the task below.\nReview my changes"
+        )
+    )
+    definition = {
+        "workflow": "implement-review-fix",
+        "repository": "/tmp/repository",
+        "task": "Review my changes",
+        "baseline": "main",
+        "base": "main",
+        "candidates": [{"id": "current", "task": "Review current implementation"}],
+    }
+    assert (
+        await coding.evaluate(_request("/workflow start " + json.dumps(definition)))
+    ).action == PolicyAction.DENY
+    definition.pop("workflow")
+    invalid = {
+        **definition,
+        "candidates": definition["candidates"] + [{"id": "other", "task": "Other"}],
+    }
+    assert (
+        await coding.evaluate(_request("/workflow start " + json.dumps(invalid)))
+    ).action == PolicyAction.DENY
+    assert (
+        await coding.evaluate(_request("/workflow start " + json.dumps(definition)))
+    ).action == PolicyAction.ALLOW
+    assert coding.state["definition"]["workflow"] == "review-fix"
