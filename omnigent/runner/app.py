@@ -4631,7 +4631,8 @@ def create_runner_app(
         from omnigent.runner.tool_dispatch import build_native_relay_tool_schemas
 
         relay_schemas: list[_JsonObject] = build_native_relay_tool_schemas(
-            _unwrap_spec_entry(spec_entry)
+            _unwrap_spec_entry(spec_entry),
+            workdir=_resolved_workdir_for_spec(spec_entry, runner_workspace),
         )
 
         _captured_session_id = session_id

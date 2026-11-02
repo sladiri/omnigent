@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 from omnigent.cli_invocation import cli_invocation
 from omnigent.harnesses.codex_native.bridge import (
     mirror_applied_codex_settings,
+    read_codex_config_developer_instructions_from_home,
     read_codex_config_model,
     read_codex_home_config_effort,
     read_codex_home_config_model,
@@ -2136,10 +2137,20 @@ class CodexNativeAppServer:
             f"{Path(self.codex_path).name} "
             f"{codex_native_session_tag_cmdline_arg(self.process_registry_tag)}"
         )
+        launch_overrides = list(self.config_overrides)
+        if self.developer_instructions:
+            # Project config must not erase the selected agent's instructions.
+            active_instructions = read_codex_config_developer_instructions_from_home(
+                self.codex_home
+            )
+            if active_instructions:
+                launch_overrides.append(
+                    f"developer_instructions={json.dumps(active_instructions)}"
+                )
         argv = _build_native_codex_app_server_argv(
             tagged_argv0=tagged_argv0,
             listen_url=resolved_listen,
-            config_overrides=self.config_overrides,
+            config_overrides=launch_overrides,
         )
         proc_env = codex_app_server_diagnostic_env(
             {**self.env, "CODEX_HOME": str(self.codex_home)}
