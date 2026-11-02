@@ -6412,6 +6412,16 @@ export function NewChatLandingScreen() {
                 "data-testid": "new-chat-landing-input",
               }}
               slots={{
+                beforeActions: (
+                  <WorkflowPromptButtons
+                    agentName={selectedAgent?.name}
+                    disabled={creating}
+                    onInsert={(prompt) => {
+                      setMessage((text) => `${prompt}\n\n${text}`);
+                      textareaRef.current?.focus();
+                    }}
+                  />
+                ),
                 beforeInput: (
                   <>
                     {/* Skill suggestions — floats above the composer box. */}
@@ -6818,14 +6828,7 @@ export function NewChatLandingScreen() {
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
                     />
-                    <WorkflowPromptButtons
-                      agentName={selectedAgent?.name}
-                      disabled={creating}
-                      onInsert={(prompt) => {
-                        setMessage((text) => `${prompt}\n\n${text}`);
-                        textareaRef.current?.focus();
-                      }}
-                    />
+
                     {!smartRoutingHarnessSelected &&
                       !(smartRoutingEligible && costControlMode === "on") &&
                       (supportsPermissionMode || selectedNativeHarness === "codex-native") && (

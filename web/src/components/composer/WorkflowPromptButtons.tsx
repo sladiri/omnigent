@@ -1,5 +1,5 @@
 import { WorkflowIcon } from "lucide-react";
-import { COMPOSER_COLLAPSED_LABEL_CLASS } from "@/components/composer/ChatComposer";
+import { COMPOSER_CONTENT_INSET_CLASS } from "@/components/composer/ChatComposer";
 import { Button } from "@/components/ui/button";
 
 export function WorkflowPromptButtons({
@@ -13,7 +13,12 @@ export function WorkflowPromptButtons({
 }) {
   if (agentName !== "workflow-controller") return null;
   return (
-    <>
+    <div
+      className={`${COMPOSER_CONTENT_INSET_CLASS} flex flex-wrap items-center gap-2 pb-2`}
+      role="group"
+      aria-label="Workflow-controller workflows"
+    >
+      <span className="w-full text-xs text-muted-foreground">Workflow-controller</span>
       {[
         {
           label: "review",
@@ -41,9 +46,9 @@ export function WorkflowPromptButtons({
           onClick={() => onInsert(prompt)}
         >
           <WorkflowIcon className="size-4" aria-hidden="true" />
-          <span className={COMPOSER_COLLAPSED_LABEL_CLASS}>{label}</span>
+          <span>{label}</span>
         </Button>
       ))}
-    </>
+    </div>
   );
 }

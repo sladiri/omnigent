@@ -3811,6 +3811,21 @@ function ComposerImpl(
           ),
         }}
         slots={{
+          beforeActions: (
+            <WorkflowPromptButtons
+              agentName={
+                subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
+              }
+              disabled={
+                disabled ||
+                isReadOnly ||
+                hasPendingElicitation ||
+                composerLockedByBtw ||
+                savingSubmitEffort
+              }
+              onInsert={insertPrompt}
+            />
+          ),
           inputPrefix:
             draft.quotes.length > 0 ? (
               <ReplyDraftBlocks
@@ -4071,19 +4086,7 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
-              <WorkflowPromptButtons
-                agentName={
-                  subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
-                }
-                disabled={
-                  disabled ||
-                  isReadOnly ||
-                  hasPendingElicitation ||
-                  composerLockedByBtw ||
-                  savingSubmitEffort
-                }
-                onInsert={insertPrompt}
-              />
+
               <Button
                 type="button"
                 variant="outline"
