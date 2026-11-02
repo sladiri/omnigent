@@ -93,8 +93,15 @@ Use `workflow: review-fix` with exactly one candidate to review the existing
 implementation in `repository`. The baseline must precede the changes to review;
 preparation preserves the current branch, files, index, and commits. Detached HEAD
 is refused because the reviewed branch must remain identifiable across resume.
-Each workflow button records its choice so the prepared start message cannot
-silently switch workflows. Direct definitions with multiple candidates
+Each workflow button highlights its choice and replaces earlier workflow prefixes
+in the draft. Send prepares the request; it does not start implementation.
+The controller calls `workflow_status` for preparation guidance, asks for missing
+inputs, and uses `workflow_draft` to validate the command with the same parser
+used at startup. Drafting has no filesystem or worker side effects. Send the
+returned `/workflow start` command to start the run. The separate
+`omnigent-workflow` skill is not this controller's command reference.
+Each button records its choice so the prepared start message cannot silently
+switch workflows. Direct definitions with multiple candidates
 and no workflow name also select Compare. New Compare runs use these gates;
 already-running workflows retain their saved workflow kind. `publish: true`
 authorizes the final signed commit, branch push, and PR creation after selection.

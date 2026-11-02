@@ -6416,8 +6416,9 @@ export function NewChatLandingScreen() {
                   <WorkflowPromptButtons
                     agentName={selectedAgent?.name}
                     disabled={creating}
-                    onInsert={(prompt) => {
-                      setMessage((text) => `${prompt}\n\n${text}`);
+                    draft={message}
+                    onChange={(text) => {
+                      setMessage(text);
                       textareaRef.current?.focus();
                     }}
                   />

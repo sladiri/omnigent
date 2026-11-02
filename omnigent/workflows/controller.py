@@ -187,6 +187,38 @@ def _definition(raw: str, conversation_id: str) -> Json:
     return definition
 
 
+def draft_start_message(
+    workflow: str, repository: str, task: str, baseline: str, base: str, publish: bool = False
+) -> str:
+    """Validate a proposed start command without starting work or changing state."""
+    try:
+        definition = _definition(
+            json.dumps(
+                {
+                    "workflow": workflow,
+                    "repository": repository,
+                    "task": task,
+                    "baseline": baseline,
+                    "base": base,
+                    "publish": publish,
+                    "candidates": []
+                    if workflow == comparison.NAME
+                    else [
+                        {
+                            "id": "current" if workflow == "review-fix" else "implementation",
+                            "task": task,
+                        }
+                    ],
+                }
+            ),
+            "",
+        )
+    except (ValueError, TypeError) as exc:
+        return json.dumps({"valid": False, "error": str(exc)})
+    definition.pop("run_id")
+    return json.dumps({"valid": True, "command": "/workflow start " + json.dumps(definition)})
+
+
 def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyResponse:
     """Grant tools only to the recorded worker for the outstanding stage."""
     from omnigent.runtime import get_conversation_store
@@ -736,6 +768,17 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     )
             return _result(state)
         if phase == "tool_call":
+            if target == "workflow_draft" and state["status"] == "idle":
+                data = event.get("data")
+                args = data.get("arguments", {}) if isinstance(data, dict) else {}
+                if not isinstance(args, dict):
+                    return _deny("Draft arguments must be an object")
+                if (
+                    state.get("requested_workflow")
+                    and args.get("workflow") != state["requested_workflow"]
+                ):
+                    return _deny("Draft must use the workflow selected by the button")
+                return _result(state)
             if target in READ_TOOLS or target == "workflow_reconcile":
                 return _result(state)
             if target == "workflow_present" and state["status"] in {
@@ -841,7 +884,20 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 },
             )
         if target == "workflow_status":
-            return _result(state, data=json.dumps(state, sort_keys=True))
+            status = dict(state)
+            if state["status"] == "idle":
+                status["next_action"] = (
+                    "Prepare the start request with workflow_draft. It validates the command "
+                    "without starting work. Required: workflow, absolute repository path, task, "
+                    "baseline (revision preceding the changes), base (intended PR target branch). "
+                    "Ask for missing details; do not invent branch names or review scope. "
+                    "Default publish to false unless the user explicitly authorizes publication. "
+                    "Read linked context with sys_session_get_history. This controller supplies "
+                    "the command format; do not load the separate omnigent-workflow skill or "
+                    "inspect files with shell commands. Show only a valid returned command and "
+                    "ask the user to send it to start. No implementation starts during drafting."
+                )
+            return _result(state, data=json.dumps(status, sort_keys=True))
         if target == "workflow_present" and state["status"] in {
             "waiting-design-selection",
             "waiting-final-selection",

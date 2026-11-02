@@ -1338,6 +1338,7 @@ async def test_relay_advertises_bundled_workflow_tools_and_removes_them_on_agent
                     "controller",
                     {
                         "workflow_status",
+                        "workflow_draft",
                         "workflow_prepare",
                         "workflow_snapshot",
                         "workflow_reconcile",

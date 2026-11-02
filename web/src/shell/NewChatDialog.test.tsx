@@ -8412,11 +8412,16 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
       fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+        target: { value: "My task" },
+      });
       for (const workflow of ["implement", "compare", "review"]) {
-        fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
-          target: { value: "My task" },
-        });
         fireEvent.click(screen.getByRole("button", { name: workflow }));
+        fireEvent.click(screen.getByRole("button", { name: workflow }));
+        expect(screen.getByRole("button", { name: workflow })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
           `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
         );
