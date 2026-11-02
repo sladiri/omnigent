@@ -35,6 +35,7 @@ from omnigent.harnesses.claude_native.bridge import (
 )
 from omnigent.inner.datamodel import TerminalEnvSpec
 from omnigent.runner import create_runner_app
+from omnigent.runner.app import ResolvedSpec
 from omnigent.spec.types import AgentSpec, ToolsConfig
 from omnigent.terminals import TerminalListEntry
 from tests.runner.helpers import NullServerClient, make_test_terminal_instance
@@ -1041,7 +1042,7 @@ def _sub_agent_enum(relay_file: Path) -> set[str]:
 def _switch_app(
     tmp_path: Path,
     server_client: _SwitchableServerClient,
-    specs: dict[str, AgentSpec],
+    specs: dict[str, AgentSpec | ResolvedSpec],
     resource_registry: _StubResourceRegistry | None = None,
 ) -> FastAPI:
     """
@@ -1055,7 +1056,9 @@ def _switch_app(
     :returns: The runner FastAPI app.
     """
 
-    async def spec_resolver(agent_id: str, session_id: str | None) -> AgentSpec | None:
+    async def spec_resolver(
+        agent_id: str, session_id: str | None
+    ) -> AgentSpec | ResolvedSpec | None:
         del session_id
         return specs.get(agent_id)
 
@@ -1300,4 +1303,59 @@ async def test_failed_launch_rolls_back_the_relay_it_started(tmp_path: Path) -> 
                 transport=httpx.ASGITransport(app=app), base_url="http://runner"
             ) as c:
                 await c.delete(f"/v1/sessions/{session_id}")
+        shutil.rmtree(bridge_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_relay_advertises_bundled_workflow_tools_and_removes_them_on_agent_switch(
+    tmp_path: Path,
+) -> None:
+    """Native controllers and workers receive tools from their resolved bundle."""
+    from omnigent.spec import load
+
+    bundle = Path(__file__).resolve().parents[2] / "examples/workflow_controller"
+    controller = load(bundle)
+    worker_bundle = bundle / "agents/worker"
+    worker = load(worker_bundle)
+    server_client = _SwitchableServerClient("controller")
+    app = _switch_app(
+        tmp_path,
+        server_client,
+        {
+            "controller": ResolvedSpec(spec=controller, workdir=bundle),
+            "worker": ResolvedSpec(spec=worker, workdir=worker_bundle),
+            "plain": _spec_without_terminals(),
+        },
+    )
+    session_id = f"conv_{uuid.uuid4().hex[:12]}"
+    bridge_dir = prepare_bridge_dir(session_id, workspace=tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://runner"
+        ) as client:
+            for agent_id, expected in (
+                (
+                    "controller",
+                    {
+                        "workflow_status",
+                        "workflow_prepare",
+                        "workflow_snapshot",
+                        "workflow_reconcile",
+                        "workflow_present",
+                        "workflow_publish",
+                    },
+                ),
+                ("worker", {"workflow_stage"}),
+                ("plain", set()),
+            ):
+                server_client.agent_id = agent_id
+                await _reset_state(client, session_id)
+                await _launch_bridged(client, session_id)
+                tools = _relay_tool_names(bridge_dir / _TOOL_RELAY_FILE)
+                assert {name for name in tools if name.startswith("workflow_")} == expected
+    finally:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://runner"
+        ) as client:
+            await client.delete(f"/v1/sessions/{session_id}")
         shutil.rmtree(bridge_dir, ignore_errors=True)
