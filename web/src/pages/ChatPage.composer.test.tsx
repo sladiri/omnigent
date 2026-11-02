@@ -6198,6 +6198,19 @@ describe("workflow prompt visibility", () => {
       expect(screen.getByRole("button", { name: "focus" })).toBeVisible();
       expect(textarea()).toHaveValue("My task");
     }
+    view.rerender(
+      <TooltipProvider>
+        <Composer {...props} selectedAgentId="controller" />
+      </TooltipProvider>,
+    );
+    for (const workflow of ["implement", "compare"]) {
+      fireEvent.change(textarea(), { target: { value: "My task" } });
+      fireEvent.click(screen.getByRole("button", { name: workflow }));
+      expect(textarea()).toHaveValue(
+        `Prepare the start message for \`${workflow}-review-fix\` using the task below.\n\nMy task`,
+      );
+      expect(textarea()).toHaveFocus();
+    }
     expect(props.onSend).not.toHaveBeenCalled();
   });
 });

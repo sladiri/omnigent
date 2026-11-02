@@ -17,6 +17,7 @@ import {
   ComposerConfigTooltipRows,
 } from "@/components/composer/ComposerControls";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { WorkflowPromptButtons } from "@/components/composer/WorkflowPromptButtons";
 import {
   COMPOSER_HARNESS_MENU_SIZE,
   HarnessMenuNavigationLabel,
@@ -1517,10 +1518,13 @@ export function AgentHarnessPicker({
   ]
     .filter(Boolean)
     .join(", ");
+  const agentModelText =
+    visibleModelText && agentEntries.some((agent) => agent.id === effectiveAgentId)
+      ? `${agentLabel} · ${visibleModelText}`
+      : visibleModelText;
   const triggerText = triggerSdk
     ? agentLabel
-    : visibleModelText ||
-      (triggerModel === undefined ? (hasAgents ? agentLabel : "No agents") : "");
+    : agentModelText || (triggerModel === undefined ? (hasAgents ? agentLabel : "No agents") : "");
   const triggerSecondaryText = triggerSdk
     ? compactModelTriggerLabel(triggerSdk.value)
     : visibleEffortText;
@@ -6813,6 +6817,14 @@ export function NewChatLandingScreen() {
                       onVoiceDiscard={() => setMessage(voiceSnapshotRef.current)}
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
+                    />
+                    <WorkflowPromptButtons
+                      agentName={selectedAgent?.name}
+                      disabled={creating}
+                      onInsert={(prompt) => {
+                        setMessage((text) => `${prompt}\n\n${text}`);
+                        textareaRef.current?.focus();
+                      }}
                     />
                     {!smartRoutingHarnessSelected &&
                       !(smartRoutingEligible && costControlMode === "on") &&

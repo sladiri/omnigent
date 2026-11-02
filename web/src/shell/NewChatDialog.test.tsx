@@ -8388,6 +8388,64 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
     );
   });
 
+  it.each([false, true])(
+    "selects the controller and exposes usable workflow buttons (mobile=%s)",
+    async (mobile) => {
+      if (mobile) onTestFinished(forceMobileViewport());
+      mockAgents([
+        ...DEFAULT_LANDING_AGENTS,
+        testAgent("ag_workflow", "workflow-controller", {
+          display_name: "Workflow-controller",
+          harness: "codex-native",
+          mine: true,
+        }),
+      ]);
+      authenticatedFetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: "conv_workflow" }),
+      } as Response);
+      renderLanding();
+      selectAgent("a2");
+      expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      openPicker();
+      fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+      fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      for (const workflow of ["implement", "compare"]) {
+        fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+          target: { value: "My task" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: workflow }));
+        expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
+          `Prepare the start message for \`${workflow}-review-fix\` using the task below.\n\nMy task`,
+        );
+        expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
+      }
+      expect(authenticatedFetchMock.mock.calls.some(([url]) => url === "/v1/sessions")).toBe(false);
+      selectAgent("a2");
+      expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
+        "Prepare the start message for `compare-review-fix` using the task below.\n\nMy task",
+      );
+      openPicker();
+      fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+      fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveAccessibleName(
+        /Workflow-controller/,
+      );
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveTextContent(
+        "Workflow-controller",
+      );
+      remountLanding();
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveTextContent(
+        "Workflow-controller · GPT-5.5",
+      );
+      const { body } = await submitAndReadBody();
+      expect(body.agent_id).toBe("ag_workflow");
+    },
+  );
+
   it("hides Codex's transport namespace in the new-session model label", () => {
     const wireModel = "system.ai.gpt-6-astra";
     useHostModelOptionsMock.mockImplementation(
