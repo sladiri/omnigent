@@ -7,5 +7,5 @@ from omnigent.workflows.operations import workflow_prepare as prepare
 
 @tool
 def workflow_prepare(definition: dict) -> str:
-    """Prepare isolated candidate worktrees from a fixed run definition."""
+    """Prepare candidate worktrees or bind Review to the current implementation."""
     return prepare(definition)

@@ -21,7 +21,7 @@ and steers messages while the agent is busy.
   alias vs. full model ID, refused switch (the pill keeps the applied model).
 - `custom-agent-selection`: choosing a custom agent shows its name beside the
   model in the new-session pill; the choice survives reload and binds the new session.
-- `workflow-prompts`: implement and compare appear only for workflow-controller
+- `workflow-prompts`: implement, compare, and review appear only for workflow-controller
   in both composers. Each inserts the workflow prompt before the draft without sending.
 - `effort-picker`: reasoning effort for harnesses that support it (Codex, Claude,
   Pi). States: available, unavailable placeholder, max/ultra levels, refused
@@ -82,7 +82,7 @@ and steers messages while the agent is busy.
   Pi), and permission mode before the session exists.
 - Open Agents → Other… and select a custom agent. Its name appears beside the
   model; reopen the picker to confirm the selected row. For Workflow-controller,
-  click implement or compare to insert a workflow prompt, add your task, then send.
+  click implement, compare, or review to insert a workflow prompt, add your task, then send.
 - Attach files or type `/` before the first send.
 - Open the agent picker's custom agents, then Create custom agent → Import
   bundle: pick a `.tar.gz` agent bundle. It installs, closes the dialog, and

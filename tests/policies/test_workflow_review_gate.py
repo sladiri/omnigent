@@ -23,18 +23,18 @@ REVIEWS = [stage for stage in STAGES if stage.startswith(("review-", "verify-", 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("compare", [False, True], ids=["implement", "compare"])
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "compare-review-fix", "review-fix"])
 @pytest.mark.parametrize("stage", REVIEWS)
 @pytest.mark.parametrize("outcome", ["COMPLETE", "NEEDS_INPUT", "BLOCKED"])
-async def test_every_review_waits_for_explicit_decision(coding, db_uri, compare, stage, outcome):
-    if compare:
+async def test_every_review_waits_for_explicit_decision(coding, db_uri, workflow, stage, outcome):
+    if workflow == "compare-review-fix":
         await start(coding)
         await explore(coding, ("simple",))
         await present(coding)
         await coding.evaluate(_request("/workflow designs 1 all"))
         await prepare(coding)
     else:
-        await begin(coding)
+        await begin(coding, workflow=workflow)
     first = stage.removesuffix("spec") + "standards" if stage.endswith("-b-spec") else stage
     while not coding.state["current"].endswith("/" + first):
         await finish(coding)

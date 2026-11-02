@@ -2,8 +2,9 @@
 
 This custom agent implements candidates in separate Git worktrees, runs three
 review/fix passes, waits for your selection, then publishes only the selected
-result. Compare first explores designs without implementation and waits for your
-approval. After implementation, it presents a second comparison from recorded
+result. Review uses the existing implementation in its current worktree and skips
+the implementation stage. Compare first explores designs without implementation
+and waits for your approval. After implementation, it presents a second comparison from recorded
 results and waits for a separate final selection. The controller is a packaged
 Python policy in `omnigent.workflows`.
 Omnigent supplies sessions, durable policy state, child events, and recovery.
@@ -26,9 +27,17 @@ answer. Answers and retries start a fresh worker for the same stage.
 ## Start a run
 
 In the Web UI, select the installed `workflow-controller` agent. Use `implement`
-for one approach or `compare` for alternatives, then describe your task. The
-buttons prepare the workflow start message. Review and send that message to start
+for one approach, `compare` for alternatives, or `review` for an existing
+implementation. Then describe your task. The buttons prepare the workflow start
+message. Review and send that message to start
 the run. No separate controller process is needed.
+
+For Review, select the project/worktree containing your implementation, click
+`review`, and enter, for example: "Review my current changes against main."
+The controller reviews committed and uncommitted task changes in that worktree.
+If the scope or baseline is unclear, it asks before starting. Findings wait for
+your decision before fixes. Approved fixes remain in the same worktree.
+Review defaults to no publication unless you request it.
 
 For Compare, the coordinator shows stable design IDs, expected benefits and
 disadvantages, complexity, maintenance cost, risks, assumptions, open questions,
@@ -68,9 +77,10 @@ harness normally before launching. The server and local runner must both use an
 Omnigent installation containing `omnigent.workflows`.
 
 The coordinator prepares the start command for you. For direct API/CLI use,
-send a JSON definition with the repository and task. The repository must be clean so
-candidate ownership is unambiguous. `baseline` fixes the comparison starting
-point; `base` is the intended PR target branch.
+send a JSON definition with the repository and task. Implement and Compare need
+a clean repository so candidate ownership is unambiguous. Review accepts the
+existing worktree, including uncommitted changes. `baseline` fixes the comparison
+starting point; `base` is the intended PR target branch.
 
 ```text
 /workflow start {"workflow":"compare-review-fix","repository":"/absolute/path/to/repository","task":"Implement the requested behavior and run its acceptance checks.","baseline":"main","base":"main","candidates":[{"id":"simple","task":"Use the simplest existing helper."},{"id":"alternative","task":"Implement the agreed alternative."}],"publish":true}
@@ -79,16 +89,20 @@ point; `base` is the intended PR target branch.
 For Compare, `candidates` are optional initial suggestions, never approval.
 Use `workflow: implement-review-fix` with a candidate when the implementation
 approach is already clear. It retains the existing review and selection behavior.
-The Compare button records its workflow choice so a prepared start message cannot
-silently downgrade it to Implement. Direct definitions with multiple candidates
+Use `workflow: review-fix` with exactly one candidate to review the existing
+implementation in `repository`. The baseline must precede the changes to review;
+preparation preserves the current branch, files, index, and commits. Detached HEAD
+is refused because the reviewed branch must remain identifiable across resume.
+Each workflow button records its choice so the prepared start message cannot
+silently switch workflows. Direct definitions with multiple candidates
 and no workflow name also select Compare. New Compare runs use these gates;
 already-running workflows retain their saved workflow kind. `publish: true`
 authorizes the final signed commit, branch push, and PR creation after selection.
 Use `publish: false` to stop with the selected reviewed worktree. Starting a run
 does not authorize merging or deployment.
 
-Preparation creates dedicated candidate branches and worktrees. It records
-ownership under the repository's common Git directory in `omnigent-workflows/`.
+Implement and Compare preparation create dedicated candidate branches and
+worktrees. Preparation records ownership under the repository's common Git directory in `omnigent-workflows/`.
 It reuses worktrees already owned by the same run and preserves other worktrees.
 Implement candidate entries can specify `branch` and `workspace` before the run
 begins. Compare derives owned paths from the approved proposal revision.
@@ -101,7 +115,7 @@ it must not override repository instructions requiring local setup.
 
 ## Stages and evidence
 
-Each candidate completes this sequence:
+Each candidate completes this sequence. Review skips only `implement`:
 
 ```text
 implement
@@ -134,7 +148,7 @@ changes; review quality still depends on the reviewers and their recorded checks
 
 ## Questions, selection, and recovery
 
-Both workflows separate review from fixing. Every initial review, verification,
+All workflows separate review from fixing. Every initial review, verification,
 and final review stops for findings, conflicts, questions, or blockers. Clean
 reviews continue. The parallel Standards and Spec reviews collect both reports
 before asking; no fix or later stage starts while a decision is pending.
@@ -162,7 +176,8 @@ After the result comparison is presented, send an exact final selection:
 ```
 
 The other candidate worktrees remain available. The controller does not copy the
-selected files into the original checkout.
+selected files into the original checkout. Review already operates in the
+original worktree; its fixes are present there.
 
 Resume the original coordinator session after interruption. `workflow_status`
 reads its durable state, including proposals, approval decisions, and both waits.
@@ -204,8 +219,9 @@ Omnigent installation. The coding end-to-end test creates a candidate worktree,
 executes worker file tools, checks reviewer and out-of-worktree write denial,
 reads the assigned stage brief, resumes a question after restart, completes the
 parallel review pairs, restarts the runner again, and requires selection before
-publication. The Compare case also checks read-only exploration, complete
-proposal presentation, revision, rejection, subset approval, no early worktree
+publication. The Review case uses the current dirty worktree, skips implementation,
+and exercises the same review waits and recovery. The Compare case also checks
+read-only exploration, complete proposal presentation, revision, rejection, subset approval, no early worktree
 creation, durable design waiting, and the final result comparison. Policy tests
 cover all-design approval, single-design approval, cancellation, unsuccessful
 candidates, stale decisions, and invalid evidence. A separate isolated server
