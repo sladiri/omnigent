@@ -28,7 +28,6 @@ import {
   Loader2Icon,
   MessagesSquareIcon,
   TextQuoteIcon,
-  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -48,6 +47,7 @@ import {
 } from "@/components/composer/ChatComposer";
 import { ComposerMentionChips } from "@/components/composer/ComposerMentionChips";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { WorkflowPromptButtons } from "@/components/composer/WorkflowPromptButtons";
 import { BackgroundTaskIndicator } from "@/components/composer/BackgroundTaskIndicator";
 import { SubagentTaskIndicator } from "@/components/composer/SubagentTaskIndicator";
 import { ReplyDraftBlocks } from "@/components/composer/ReplyDraftBlocks";
@@ -2490,9 +2490,6 @@ function ComposerImpl(
   // from the composer's read-only model/effort label.
   const sessionHarness = useChatStore((s) => s.sessionHarness);
   const subAgentName = useChatStore((s) => s.subAgentName);
-  const showWorkflowPrompts =
-    (subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name) ===
-    "workflow-controller";
   const brainHarnessLabels = useBrainHarnessLabels();
   const harnessLabel = composerHarnessLabel(
     modelPickerKind,
@@ -3642,6 +3639,14 @@ function ComposerImpl(
     resetCursor();
   };
 
+  const insertPrompt = (prompt: string) => {
+    editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
+    dirtyRef.current = true;
+    resetCursor();
+    if (commandError !== null) setCommandError(null);
+    textareaRef.current?.focus();
+  };
+
   const handleTextFocus = (id: string | null, element: HTMLTextAreaElement) => {
     textareaRef.current = element;
     focusText(id);
@@ -4066,54 +4071,41 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
-              {[
-                {
-                  label: "implement",
-                  icon: WorkflowIcon,
-                  prompt:
-                    "Prepare the start message for `implement-review-fix` using the task below.",
-                },
-                {
-                  label: "compare",
-                  icon: WorkflowIcon,
-                  prompt:
-                    "Prepare the start message for `compare-review-fix` using the task below.",
-                },
-                {
-                  label: "focus",
-                  icon: TextQuoteIcon,
-                  prompt:
+              <WorkflowPromptButtons
+                agentName={
+                  subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
+                }
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                onInsert={insertPrompt}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-2 text-xs md:h-8"
+                title="focus"
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                onClick={() =>
+                  insertPrompt(
                     'We\'re in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.',
-                },
-              ]
-                .filter(({ label }) => label === "focus" || showWorkflowPrompts)
-                .map(({ label, prompt, icon: Icon }) => (
-                  <Button
-                    key={label}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-9 px-2 text-xs md:h-8"
-                    title={label}
-                    disabled={
-                      disabled ||
-                      isReadOnly ||
-                      hasPendingElicitation ||
-                      composerLockedByBtw ||
-                      savingSubmitEffort
-                    }
-                    onClick={() => {
-                      editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
-                      dirtyRef.current = true;
-                      resetCursor();
-                      if (commandError !== null) setCommandError(null);
-                      textareaRef.current?.focus();
-                    }}
-                  >
-                    <Icon className="size-4" aria-hidden="true" />
-                    {label}
-                  </Button>
-                ))}
+                  )
+                }
+              >
+                <TextQuoteIcon className="size-4" aria-hidden="true" />
+                focus
+              </Button>
               {showEffort &&
                 !showInterruptButton &&
                 !(costRoutingEligible && submitRoutingMode === "on") && (

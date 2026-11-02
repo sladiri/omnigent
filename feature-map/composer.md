@@ -19,6 +19,10 @@ and steers messages while the agent is busy.
 - `model-picker`: lists the host's live model catalog, highlights the current
   model, and keeps the selection. States: catalog loading, delayed catalog,
   alias vs. full model ID, refused switch (the pill keeps the applied model).
+- `custom-agent-selection`: choosing a custom agent shows its name beside the
+  model in the new-session pill; the choice survives reload and binds the new session.
+- `workflow-prompts`: implement and compare appear only for workflow-controller
+  in both composers. Each inserts the workflow prompt before the draft without sending.
 - `effort-picker`: reasoning effort for harnesses that support it (Codex, Claude,
   Pi). States: available, unavailable placeholder, max/ultra levels, refused
   change (the pill keeps the applied level).
@@ -76,6 +80,9 @@ and steers messages while the agent is busy.
 - Hover the model/effort pill to see the tooltip.
 - Pick a harness, then open its configuration for model, effort (Codex, Claude,
   Pi), and permission mode before the session exists.
+- Open Agents → Other… and select a custom agent. Its name appears beside the
+  model; reopen the picker to confirm the selected row. For Workflow-controller,
+  click implement or compare to insert a workflow prompt, add your task, then send.
 - Attach files or type `/` before the first send.
 - Open the agent picker's custom agents, then Create custom agent → Import
   bundle: pick a `.tar.gz` agent bundle. It installs, closes the dialog, and
@@ -116,6 +123,16 @@ Tests under `tests/browser_ui/` stub every backend call and need no instance:
 - **`model-picker`, new-session composer:**
   `tests/e2e_ui/start_session/test_model_flows_prelaunch.py::test_claude_default_entry_names_the_true_default`,
   `tests/e2e_ui/start_session/test_composer_transition.py::test_selected_model_survives_delayed_create`
+- **`custom-agent-selection`, new-session composer (landing or project, desktop and mobile):**
+  covered by `web/src/shell/NewChatDialog.test.tsx`. Manually select a custom
+  agent on the same harness/model as the current choice, confirm its name in
+  the pill (in the picker on narrow screens), reload, then send a message and
+  confirm the new session uses that agent.
+- **`workflow-prompts`, both composers (desktop and mobile):**
+  `web/src/shell/NewChatDialog.test.tsx` and
+  `web/src/pages/ChatPage.composer.test.tsx` cover visibility and draft handling.
+  Select Workflow-controller and click each button. Expect its prompt before
+  your draft, with no send. Choose another agent and expect the buttons to hide.
 - **`effort-picker`, new-session composer:**
   `tests/e2e_ui/start_session/test_codex_effort_prelaunch.py::test_new_codex_session_gear_offers_reasoning_effort`
 - **`model-picker`, `effort-picker`, refused change:** the rollback cases in

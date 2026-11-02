@@ -41,7 +41,8 @@ export const COMPOSER_TRAY_INSET_CLASS = "mx-3";
 /**
  * Minimum free space (px) the action row keeps between its leading and
  * trailing groups. Once the row is narrower than both groups plus this gap,
- * the controls' text labels collapse to icons instead of wrapping.
+ * the controls' text labels collapse to icons. Rows with workflow buttons
+ * can wrap if the collapsed groups still cannot fit.
  */
 export const COMPOSER_LABELS_MIN_GAP_PX = 24;
 
@@ -347,7 +348,7 @@ export const ComposerActionRow = forwardRef<HTMLDivElement, ComponentPropsWithou
       <div
         ref={ref}
         className={cn(
-          "group/composer-actions @container/composer-actions relative flex min-w-0 flex-nowrap items-center justify-between gap-2 pt-1 pb-2",
+          "group/composer-actions @container/composer-actions relative flex min-w-0 flex-nowrap data-[labels=collapsed]:has-[[data-workflow-prompt]]:flex-wrap items-center justify-between gap-2 pt-1 pb-2",
           COMPOSER_CONTENT_INSET_CLASS,
           className,
         )}
@@ -366,7 +367,9 @@ export const ComposerActionGroup = forwardRef<
       ref={ref}
       className={cn(
         "flex min-w-0 items-center gap-1",
-        side === "left" ? "flex-none overflow-visible" : "ml-auto max-w-full shrink-0",
+        side === "left"
+          ? "flex-none overflow-visible"
+          : "ml-auto max-w-full shrink-0 group-data-[labels=collapsed]/composer-actions:has-[[data-workflow-prompt]]:flex-wrap group-data-[labels=collapsed]/composer-actions:has-[[data-workflow-prompt]]:justify-end",
         className,
       )}
       {...props}
