@@ -22,7 +22,8 @@ and steers messages while the agent is busy.
 - `custom-agent-selection`: choosing a custom agent shows its name beside the
   model in the new-session pill; the choice survives reload and binds the new session.
 - `workflow-prompts`: implement, compare, and review appear only for workflow-controller
-  in both composers. Each inserts the workflow prompt before the draft without sending.
+  in a separate row in both composers, with visible names and the selected controller
+  identified. Each inserts the workflow prompt before the draft without sending.
 - `effort-picker`: reasoning effort for harnesses that support it (Codex, Claude,
   Pi). States: available, unavailable placeholder, max/ultra levels, refused
   change (the pill keeps the applied level).
