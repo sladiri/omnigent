@@ -312,10 +312,17 @@ def draft_start_message(
 
 def question_preview(state: Json) -> Json | None:
     """Bind the UI answer to this exact persisted stage question."""
-    if state.get("status") != "waiting-user" or not state.get("question"):
+    if (
+        state.get("status") not in {"waiting-user", "blocked"}
+        or not state.get("question")
+        or not state.get("current")
+        or state.get("selected")
+        or _pending(state)
+    ):
         return None
     identity = {
-        key: state.get(key) for key in ("definition", "current", "attempt", "revision", "question")
+        key: state.get(key)
+        for key in ("definition", "status", "current", "attempt", "revision", "question")
     }
     return {
         "token": uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(identity, sort_keys=True)).hex,
@@ -1055,12 +1062,13 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 state.update(selected=candidate_id, status="snapshot", snapshot_for="selection")
             elif text.startswith("/workflow answer "):
                 answer = text.removeprefix("/workflow answer ").strip()
-                if state["status"] != "waiting-user" or not state.get("current") or not answer:
+                if not question_preview(state) or not answer:
                     return _deny("No stage is waiting for this answer")
                 review_wait = state.pop("review_wait", {})
                 state.setdefault("decisions", []).append(
                     {
                         "command": text,
+                        "question": state["question"],
                         "stage": state["current"],
                         "revision": state.get("revision"),
                         "review": review_wait,

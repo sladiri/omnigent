@@ -1115,3 +1115,74 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
                 ]
                 == "POLICY_ACTION_DENY"
             )
+
+            # A later worker can block after the first Answer was already accepted.
+            title = "one/implement/2"
+            next_child = store.create_conversation(
+                parent_conversation_id=sid, title="worker:" + title
+            )
+            state.update(
+                status="running",
+                pending={"stage": "one/implement", "title": title, "child_id": next_child.id},
+            )
+            store.set_session_state(sid, {STATE_KEY: state})
+            from omnigent.runner.tool_dispatch import _subagent_tool_result_policy_request
+
+            blocked = {
+                "stage": "one/implement",
+                "outcome": "BLOCKED",
+                "question": "Required instructions are inaccessible. Can access be repaired?",
+                "evidence": "The required instruction read was denied; no files changed.",
+            }
+            response = client.post(
+                f"/v1/sessions/{sid}/policies/evaluate",
+                json=_subagent_tool_result_policy_request(
+                    {
+                        "agent": "worker",
+                        "title": title,
+                        "conversation_id": next_child.id,
+                        "status": "completed",
+                        "work_id": "second-work",
+                    },
+                    json.dumps(blocked),
+                ),
+            )
+            response.raise_for_status()
+            assert store.get_conversation(sid).session_state[STATE_KEY]["status"] == "blocked"
+            next_preview = client.get(f"/v1/sessions/{sid}/workflow-draft").json()
+            assert next_preview["question"]["text"] == blocked["question"]
+            assert next_preview["question"]["token"] != token
+            stack.restart_server()
+            assert client.get(f"/v1/sessions/{sid}/workflow-draft").json() == next_preview
+            assert (
+                evaluate("PHASE_REQUEST", {"text": f"/workflow answer-question {token} Old"})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )
+            assert (
+                evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )
+            answer = (
+                f"/workflow answer-question {next_preview['question']['token']} "
+                "Access is fixed; retry"
+            )
+            assert evaluate("PHASE_REQUEST", {"text": answer})["result"] == "POLICY_ACTION_ALLOW"
+            stack.restart_server()
+            resumed = store.get_conversation(sid).session_state[STATE_KEY]
+            assert resumed["status"] == "snapshot"
+            assert resumed["current"] == "one/implement"
+            assert resumed["attempt"] == 3
+            assert resumed["completed"] == {}
+            assert resumed["definition"]["publish"] is False
+            assert resumed["decisions"][-1]["question"] == blocked["question"]
+            assert resumed["answer"] == "Access is fixed; retry"
+            assert (
+                evaluate("PHASE_TOOL_CALL", {"name": "workflow_publish", "arguments": {}})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )

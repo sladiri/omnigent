@@ -995,7 +995,10 @@ async def test_prepared_draft_requires_current_explicit_user_selection(coding, s
 
 
 @pytest.mark.asyncio
-async def test_malformed_stage_preserves_worker_question_without_advancing(coding):
+@pytest.mark.parametrize(
+    "retry_command", ["/workflow retry", "/workflow answer Retry with correct evidence"]
+)
+async def test_malformed_stage_preserves_worker_question_without_advancing(coding, retry_command):
     await begin(coding)
     dispatch = await coding.dispatch()
     report = {
@@ -1028,8 +1031,7 @@ async def test_malformed_stage_preserves_worker_question_without_advancing(codin
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     await coding.evaluate(_request("Unrelated message"))
     assert coding.state["status"] == "blocked"
-    assert (await coding.evaluate(_request("/workflow answer Guess"))).action == PolicyAction.DENY
-    await coding.evaluate(_request("/workflow retry"))
+    await coding.evaluate(_request(retry_command))
     await snapshot(coding)
     retry = await coding.dispatch()
     assert retry["title"].startswith("one/implement/")
@@ -1163,3 +1165,84 @@ async def test_recovery_does_not_infer_question_from_untrusted_or_incomplete_his
     assert coding.state["status"] == "running"
     assert coding.state["pending"]
     assert coding.state["completed"] == {}
+
+
+@pytest.mark.asyncio
+async def test_answer_reappears_when_next_worker_reports_blocked(coding, monkeypatch):
+    from omnigent.workflows.controller import draft_preview
+
+    await begin(coding, publish=False)
+    await finish(coding, outcome="NEEDS_INPUT")
+    first = draft_preview({STATE_KEY: coding.state})["question"]
+    await coding.evaluate(
+        _request(f"/workflow answer-question {first['token']} Keep one worktree")
+    )
+    await snapshot(coding)
+    await finish(coding, outcome="BLOCKED")
+    assert coding.state["status"] == "blocked"
+    second = draft_preview({STATE_KEY: coding.state})["question"]
+    assert second is not None, "A blocked worker question must expose the Answer action"
+    assert second["token"] != first["token"]
+    stopped = coding.state
+    await coding.evaluate(_request("Unrelated message"))
+    await coding.evaluate(output("workflow_status", {}))
+    assert coding.state == stopped
+    for command in (
+        f"/workflow answer-question {first['token']} Old answer",
+        f"/workflow answer-question {second['token']} ",
+        "/workflow select one",
+    ):
+        assert (await coding.evaluate(_request(command))).action == PolicyAction.DENY
+    for tool in ("sys_session_send", "workflow_publish"):
+        assert (await coding.evaluate(_call(tool))).action == PolicyAction.DENY
+    answer = f"/workflow answer-question {second['token']} Retry after access is fixed"
+    assert (await coding.evaluate(_request(answer))).action == PolicyAction.ALLOW
+    assert coding.state["status"] == "snapshot"
+    assert coding.state["current"] == "one/implement"
+    assert coding.state["answer"] == "Retry after access is fixed"
+    assert coding.state["completed"] == {}
+    assert coding.state["verified"] == {}
+    assert coding.state["selected"] is None
+    assert coding.state["definition"]["publish"] is False
+    assert (await coding.evaluate(_request(answer))).action == PolicyAction.DENY
+    await snapshot(coding)
+    retry = await coding.dispatch()
+    assert retry["title"] == "one/implement/3"
+    child = coding.store.create_conversation(
+        parent_conversation_id=coding.session_id, title="worker:" + retry["title"]
+    )
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    brief = _worker_policy(
+        {"type": "tool_result", "target": "workflow_stage"}, coding.session_id, child.id
+    )
+    assert "Retry after access is fixed" in brief["data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"pending": {"title": "uncertain", "stage": "one/implement"}},
+        {"parallel": {"pending": {"title": "uncertain", "stage": "one/review-b-spec"}}},
+        {"current": None},
+        {"selected": "one"},
+        {"status": "waiting-design-selection"},
+        {"status": "waiting-design-revision"},
+        {"status": "waiting-final-selection"},
+        {"status": "cancelled"},
+    ],
+)
+async def test_stage_answer_does_not_replace_other_gates(coding, overrides):
+    from omnigent.workflows.controller import draft_preview
+
+    await begin(coding, publish=False)
+    await finish(coding, outcome="BLOCKED")
+    state = {**coding.state, **overrides}
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+    assert draft_preview({STATE_KEY: state})["question"] is None
+    for command in ("/workflow answer Retry", "/workflow answer-question stale Retry"):
+        result = await coding.evaluate(_request(command))
+        assert result.action == (
+            PolicyAction.ALLOW if state["status"] == "cancelled" else PolicyAction.DENY
+        )
+        assert coding.state == state
