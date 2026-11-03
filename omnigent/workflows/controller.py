@@ -14,6 +14,7 @@ from typing import Any, TypeAlias, cast
 from omnigent.entities import Conversation
 from omnigent.policies.builtins.github import github_policy
 from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
+from omnigent.policies.builtins.working_dir import block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
 from omnigent.stores import ConversationStore
 from omnigent.workflows import comparison
@@ -440,20 +441,44 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         explicit_cd = command.startswith(f"cd {shlex.quote(str(workspace))} && ")
         if cwd != str(workspace) and not explicit_cd:
             return _deny("Shell calls must explicitly set the candidate workdir")
-    for policy in (github_policy(),):
-        verdict = policy(event)
-        if verdict and verdict.get("result") != "ALLOW":
-            return verdict
-    verdict = blast_radius(risky_action="DENY")(cast(Json, event), {})
-    if verdict["result"] != "ALLOW":
-        return cast(PolicyResponse, verdict)
     command = str(args.get("command", args.get("cmd", "")))
     if re.search(
-        r"\bgit\b[^\n;]*\b(commit|merge|rebase|cherry-pick|push|reset)\b|\b(oc|kubectl)\b", command
+        r"\bgit\b[^\n;]*\b(commit|merge(?!-base\b)|rebase|cherry-pick|push|reset)\b|\b(oc|kubectl)\b",
+        command,
     ):
         return _deny("Workers cannot publish or rewrite Git history")
+    policy_event: PolicyEvent = event
+    if "command" in args or "cmd" in args:
+        # Resolve the brief's exact cd prefix before checking relative Git paths.
+        prefix = f"cd {shlex.quote(str(workspace))} && "
+        shell_args = {**args, "command": command.removeprefix(prefix)}
+        if command.startswith(prefix):
+            shell_args["workdir"] = str(workspace)
+        policy_event = {
+            **event,
+            "target": "sys_os_shell",
+            "context": {"conversation_id": session_id},
+            "data": {"name": "sys_os_shell", "arguments": shell_args},
+        }
+    for policy in (
+        github_policy(),
+        block_working_dir_changes(
+            block_worktree=False, allowed_dirs=[str(workspace)], allow_sibling_worktrees=False
+        ),
+        block_working_dir_changes(
+            block_cd=False,
+            allow_sibling_worktrees=stage.split("/")[-1]
+            in {"implement", "fix-a", "fix-b", "fix-c"},
+        ),
+    ):
+        verdict = policy(policy_event)
+        if verdict and verdict.get("result") != "ALLOW":
+            return verdict
+    verdict = blast_radius(risky_action="DENY")(cast(Json, policy_event), {})
+    if verdict["result"] != "ALLOW":
+        return cast(PolicyResponse, verdict)
     if pending["stage"].split("/")[-1] in _REVIEW:
-        verdict = read_only_os()(cast(Json, event), {})
+        verdict = read_only_os()(cast(Json, policy_event), {})
         if verdict["result"] != "ALLOW":
             return cast(PolicyResponse, verdict)
     return {"result": "ALLOW"}

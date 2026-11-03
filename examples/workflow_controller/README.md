@@ -13,7 +13,14 @@ The coordinator explains progress and calls the next permitted tool. The policy
 supplies worktree paths and worker briefs, records dispatch intent, validates
 completion reports, and enforces stage order. Workers cannot advance the run or
 publish their changes. Each worker starts with its candidate worktree as the
-actual runtime working directory.
+actual runtime working directory. Active implementation and fix workers may use
+ordinary `git worktree add` to create a new adjacent worktree of that repository.
+The permission requires local Git metadata and an unused destination. Forced
+creation, branch replacement, moving/removing worktrees, and writes outside the
+assigned candidate remain blocked. Creation does not assign another repository or
+advance a review gate. Review and analysis workers cannot create worktrees.
+Read-only `git merge-base` ancestry checks are allowed in implementation, fix,
+and review stages.
 
 Existing implementation, review, and fix workers start a native Codex goal for
 their assigned stage report. Exploration and result comparison do not start goals.

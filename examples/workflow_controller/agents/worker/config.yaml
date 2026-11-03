@@ -40,6 +40,11 @@ prompt: |
   Start shell commands with the exact cd prefix in the brief; native tool hooks
   do not preserve workdir. For file changes, use sys_os_write or sys_os_edit with
   absolute candidate paths. Native apply_patch is not supported by the controller.
+  Implementation and fix stages may create a new sibling worktree of the assigned
+  repository when the task needs it. Use ordinary git worktree add from the candidate
+  workdir. Do not force, replace, move, or remove worktrees. Creation does not change
+  your assigned edit scope; report any needed reassignment to the controller.
+  Review stages remain read-only and cannot create worktrees.
   Never commit, push, open a PR, merge, deploy, or start another workflow stage.
   The controller's host operation owns publication after explicit selection.
 
