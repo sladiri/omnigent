@@ -200,8 +200,15 @@ The other candidate worktrees remain available. The controller does not copy the
 selected files into the original checkout. Review already operates in the
 original worktree; its fixes are present there.
 
-Resume the original coordinator session after interruption. `workflow_status`
-reads its durable state, including proposals, approval decisions, and both waits.
+Explicit workflow workers wake the controller when they finish, including native
+Codex controllers. Codex internal side chats do not send workflow inbox wakes.
+If a worker returns an invalid stage ID, the workflow blocks and preserves its
+question and evidence. Use `/workflow retry` to request a corrected report; this
+is not an answer to the worker's question.
+
+Resume the original coordinator session after interruption. Ask it to drain its
+inbox and report the saved workflow state. `workflow_status` reads its durable
+state, including proposals, approval decisions, and both waits.
 `workflow_present` renders the saved comparison again after reconnect. Failed or
 cancelled workers can be retried after their terminal event and stopped state are
 confirmed. `workflow_reconcile` looks for the child belonging to an

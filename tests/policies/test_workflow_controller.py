@@ -807,6 +807,8 @@ async def test_goal_brief_is_unabridged_and_bound_to_each_parallel_worker(coding
         )
         brief = (await engine.evaluate(output("workflow_stage", "stub"))).data
         assert f"Stage: one/review-b-{axis}\n" in brief
+        assert f'"stage": "one/review-b-{axis}"' in brief
+        assert f"Stage: one/review-b-{axis}\n" in dispatch["args"]
         assert "long evidence " * 1000 in brief
         assert len(dispatch["args"]) < 4000
 
@@ -990,3 +992,45 @@ async def test_prepared_draft_requires_current_explicit_user_selection(coding, s
     assert (
         await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}get_issue"))
     ).action == PolicyAction.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_malformed_stage_preserves_worker_question_without_advancing(coding):
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    report = {
+        "stage": "implement",
+        "outcome": "NEEDS_INPUT",
+        "evidence": "The current cache cannot establish deletion.",
+        "question": "May I use a read-only Registry batch query?",
+        "findings": [],
+        "resolved": [],
+    }
+    await coding.evaluate(
+        output(
+            "sys_session_send",
+            report,
+            {
+                "name": "sys_session_send",
+                "args": {
+                    "agent": "worker",
+                    "title": dispatch["title"],
+                    "conversation_id": "child-1",
+                },
+                "subagent": {"status": "completed", "work_id": "work-1"},
+            },
+        )
+    )
+    assert coding.state["status"] == "blocked"
+    assert report["question"] in coding.state["question"]
+    assert coding.state["incomplete"]["one/implement"]["evidence"] == report["evidence"]
+    assert coding.state["completed"] == {}
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await coding.evaluate(_request("Unrelated message"))
+    assert coding.state["status"] == "blocked"
+    assert (await coding.evaluate(_request("/workflow answer Guess"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow retry"))
+    await snapshot(coding)
+    retry = await coding.dispatch()
+    assert retry["title"].startswith("one/implement/")
+    assert report["question"] in coding.state["incomplete"]["one/implement"]["question"]
