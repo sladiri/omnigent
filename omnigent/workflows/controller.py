@@ -481,6 +481,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         elif target not in {"sys_os_read", "Read", "Glob", "Grep"}:
             return _deny("Exploration and comparison cannot implement, test, or delegate")
     skill_roots = [Path.home() / parent / "skills" for parent in (".agents", ".codex", ".claude")]
+    skill_roots.append(Path.home() / ".codex/skills/.system")
     skill_paths = [
         installed.resolve()
         for root in skill_roots

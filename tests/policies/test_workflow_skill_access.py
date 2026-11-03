@@ -58,18 +58,25 @@ async def test_worker_reads_symlinked_skills_without_write_or_sibling_access(
             "sys_os_read", {"path": str(path)}, agent_spec=spec, runner_workspace=workspace
         )
 
+    extra = {
+        ".agents": "caveman-commit",
+        ".codex": ".system/skill-creator",
+        ".claude": "skill-review-my-pr",
+    }
     for name, stage in [
         ("ponytail", "one/review-a"),
         ("ponytail-review", "one/review-c"),
         ("code-review", "one/review-b-spec"),
         ("compare-solutions", "explore"),
+        (extra[installation], "one/implement"),
     ]:
         installed = source / name
-        installed.mkdir()
+        installed.mkdir(parents=True)
         skill = installed / "SKILL.md"
         skill.write_text("required skill " + name)
         reference = installed / "reference.md"
         reference.write_text("required reference " + name)
+        (installs / name).parent.mkdir(parents=True, exist_ok=True)
         (installs / name).symlink_to(installed, target_is_directory=True)
         pending["stage"] = stage
         for path in [skill, installs / name / "SKILL.md", reference]:
@@ -92,5 +99,9 @@ async def test_worker_reads_symlinked_skills_without_write_or_sibling_access(
         assert "no sandbox write grant" in result
         assert skill.read_text() == "required skill " + name
     assert "no sandbox read grant" in await read(secret)
+    unlisted = installs / "new-unlisted-skill"
+    unlisted.mkdir()
+    (unlisted / "SKILL.md").write_text("Unlisted future skill")
+    assert "no sandbox read grant" in await read(unlisted / "SKILL.md")
     state["status"] = "waiting-user"
     assert permitted("sys_os_read", skill) == "DENY"

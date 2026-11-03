@@ -73,7 +73,11 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = (
 # Outward / destructive but recoverable — ASK the human first.
 _ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgh\s+(pr\s+merge|release|repo\s+delete)\b"),
-    re.compile(r"\b(kubectl|helm|terraform|databricks)\b.*\b(apply|deploy|destroy|delete)\b"),
+    # Action words inside paths such as deploy/charts are not commands.
+    re.compile(
+        r"\b(kubectl|helm|terraform|databricks)\b.*"
+        r"(?<![\w/.-])(apply|deploy|destroy|delete)(?![\w/.-])"
+    ),
 )
 
 # Recursive-force ``rm`` of one of these (the directory itself) is catastrophic.
