@@ -39,7 +39,10 @@ def test_native_patch_real_paths_and_candidate_shell_scope(tmp_path, monkeypatch
     sessions = {
         "root": SimpleNamespace(session_state={STATE_KEY: state}),
         "child": SimpleNamespace(
-            id="child", parent_conversation_id="root", title="worker:implement"
+            id="child",
+            parent_conversation_id="root",
+            title="worker:implement",
+            workspace=str(workspace),
         ),
     }
     monkeypatch.setattr(

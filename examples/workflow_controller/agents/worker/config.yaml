@@ -41,7 +41,11 @@ prompt: |
   cd prefix in the brief is also supported. For file changes, use sys_os_write or
   sys_os_edit with absolute candidate paths, or apply_patch with explicit patch
   text. All patch paths, including rename destinations, must stay in this candidate.
-  Do not create or switch to another worktree. Review stages remain read-only.
+  Implementation and fix stages may create a new sibling worktree of the assigned
+  repository when the task needs it. Use ordinary git worktree add from the candidate
+  workdir. Do not force, replace, move, or remove worktrees. Creation does not change
+  your assigned edit scope; report any needed reassignment to the controller.
+  Review stages remain read-only and cannot create worktrees.
   Never commit, push, open a PR, merge, deploy, or start another workflow stage.
   The controller's host operation owns publication after explicit selection.
 
