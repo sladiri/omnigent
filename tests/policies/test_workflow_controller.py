@@ -845,7 +845,7 @@ async def test_prepared_draft_requires_current_explicit_user_selection(coding, s
             )
         ).action == PolicyAction.ALLOW
     assert (
-        await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}save_issue"))
+        await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}delete_issue"))
     ).action == PolicyAction.DENY
     assert (
         await coding.evaluate(_request("/workflow start-draft missing"))
@@ -880,4 +880,4 @@ async def test_prepared_draft_requires_current_explicit_user_selection(coding, s
     ).action == PolicyAction.DENY
     assert (
         await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}get_issue"))
-    ).action == PolicyAction.DENY
+    ).action == PolicyAction.ALLOW

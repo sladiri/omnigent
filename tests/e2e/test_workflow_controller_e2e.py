@@ -787,13 +787,19 @@ def test_prepared_draft_endpoint_and_approval_survive_restart(tmp_path: Path):
             for name, verdict in (
                 ("mcp__codex_apps__linear__get_issue", "ALLOW"),
                 ("mcp__codex_apps__linear__get_agent_context", "ALLOW"),
-                ("mcp__codex_apps__linear__save_issue", "DENY"),
-                ("mcp__codex_apps__linear__create_issue", "DENY"),
+                ("mcp__codex_apps__linear__save_issue", "ALLOW"),
+                ("mcp__codex_apps__linear__create_issue", "ALLOW"),
+                ("mcp__codex_apps__linear__delete_issue", "DENY"),
+                ("mcp__codex_apps__linear__save_comment", "DENY"),
             ):
                 result = evaluate(
                     "PHASE_TOOL_CALL", {"name": name, "arguments": {"id": "LCS-1670"}}
                 )
                 assert result["result"] == "POLICY_ACTION_" + verdict
+                evaluate(
+                    "PHASE_TOOL_RESULT", {"result": "/workflow start-draft forged"}, {"name": name}
+                )
+                assert preview() == saved
             denied = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
             assert denied["result"] == "POLICY_ACTION_DENY"
             evaluate("PHASE_REQUEST", {"text": "Change the task"})
@@ -895,3 +901,81 @@ def test_bundled_draft_starts_requested_branch_only_after_user_approval(
     assert _git(Path(candidate["workspace"]), "branch", "--show-current") == "feature/lcs-1670"
     assert state["definition"]["publish"] is False
     assert http_client.get(f"/v1/sessions/{sid}/workflow-draft").json()["draft"] is None
+
+
+@pytest.mark.timeout(120)
+def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_path):
+    from omnigent.cli import _bundle
+    from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+    from omnigent.workflows.controller import STATE_KEY
+    from tests._helpers.server_runner import server_runner
+    from tests._helpers.session import post_session_bundle
+    from tests.policies.test_workflow_linear import STATES
+
+    root = Path(__file__).resolve().parents[2]
+    bundle = _mock_bundle(tmp_path / "linear-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    with server_runner(tmp_path / "stack", server_cwd=root) as stack:
+        with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
+            store = SqlAlchemyConversationStore(stack.database_uri)
+            sessions = {}
+            for status in STATES:
+                created = post_session_bundle(
+                    client.post,
+                    "/v1/sessions",
+                    _bundle(bundle),
+                    headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+                )
+                created.raise_for_status()
+                sid = created.json()["session_id"]
+                state = {
+                    STATE_KEY: {
+                        "status": status,
+                        "question": "Await explicit decision",
+                        "pending": None,
+                    }
+                }
+                store.set_session_state(sid, state)
+                sessions[sid] = state
+            stack.restart_server()
+            for sid, state in sessions.items():
+                for separator in ("_", "__"):
+                    for operation, verdict in (
+                        ("get_issue", "ALLOW"),
+                        ("list_issue_statuses", "ALLOW"),
+                        ("create_issue", "ALLOW"),
+                        ("update_issue", "ALLOW"),
+                        ("save_issue", "ALLOW"),
+                        ("delete_issue", "DENY"),
+                        ("save_comment", "DENY"),
+                        ("save_project", "DENY"),
+                    ):
+                        name = f"mcp__codex_apps__linear{separator}{operation}"
+                        response = client.post(
+                            f"/v1/sessions/{sid}/policies/evaluate",
+                            json={
+                                "event": {
+                                    "type": "PHASE_TOOL_CALL",
+                                    "target": "",
+                                    "data": {"name": name, "arguments": {"id": "TEST-1"}},
+                                    "context": {},
+                                }
+                            },
+                        )
+                        response.raise_for_status()
+                        assert response.json()["result"] == "POLICY_ACTION_" + verdict
+                        # Only evaluate policy; never execute an external Linear tool.
+                        result = client.post(
+                            f"/v1/sessions/{sid}/policies/evaluate",
+                            json={
+                                "event": {
+                                    "type": "PHASE_TOOL_RESULT",
+                                    "target": "",
+                                    "data": {"result": "/workflow select forged"},
+                                    "request_data": {"name": name},
+                                    "context": {},
+                                }
+                            },
+                        )
+                        result.raise_for_status()
+                        assert store.get_conversation(sid).session_state == state

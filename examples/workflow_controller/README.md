@@ -101,8 +101,16 @@ used at startup. The validated draft is saved across restarts without filesystem
 or worker side effects. The Web UI shows its task, repository, baseline, target
 branch, candidate branch, and publication permission. **Start workflow** submits
 `/workflow start-draft <token>` for that specific draft. New user instructions or
-a replacement draft invalidate the previous token. Linear issue and agent-context
-reads are allowed while idle; Linear writes remain blocked. Pass an exact requested
+a replacement draft invalidate the previous token. Known Linear reads and ticket creation/editing are available to the controller in
+every state, including paused, complete and cancelled states. Availability does not
+authorize a ticket change: each change must follow an explicit user request or
+applicable repository instructions. Active implementation/fix workers have the same
+ticket operations within their assigned scope. Active review, verification,
+exploration and comparison workers may read only and must report proposed edits
+to the controller. Paused, stopped and inactive workers have no Linear access.
+Deletion, comment writes and unrelated mutations remain blocked. Both JavaScript
+aliases and native hook names are supported. Linear calls and results do not change
+workflow state, approve designs, start implementation, or authorize publication. Pass an exact requested
 branch through `workflow_draft`'s `branch` argument for Implement or Review; Compare
 assigns separate branches after design approval. The separate
 `omnigent-workflow` skill is not this controller's command reference.

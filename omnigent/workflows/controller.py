@@ -55,13 +55,68 @@ READ_TOOLS = {
     "sys_session_get_info",
     "sys_session_get_history",
 }
-PREPARATION_READ_TOOLS = {
-    # Native hooks retain the separator that JavaScript tool aliases flatten.
-    "mcp__codex_apps__linear__get_issue",
-    "mcp__codex_apps__linear__get_agent_context",
-    "mcp__codex_apps__linear_get_issue",
-    "mcp__codex_apps__linear_get_agent_context",
+LINEAR_READ_OPERATIONS = {
+    "get_agent_context",
+    "get_agent_skill",
+    "get_attachment",
+    "get_diff",
+    "get_diff_threads",
+    "get_document",
+    "get_initiative",
+    "get_issue",
+    "get_issue_status",
+    "get_milestone",
+    "get_notifications",
+    "get_project",
+    "get_release",
+    "get_release_note",
+    "get_status_updates",
+    "get_team",
+    "get_template",
+    "get_triage_responsibility",
+    "get_user",
+    "get_workspace",
+    "list_agent_skills",
+    "list_comments",
+    "list_custom_views",
+    "list_customer_needs",
+    "list_customers",
+    "list_cycles",
+    "list_diffs",
+    "list_documents",
+    "list_initiative_labels",
+    "list_initiatives",
+    "list_issue_labels",
+    "list_issue_statuses",
+    "list_issues",
+    "list_milestones",
+    "list_project_labels",
+    "list_projects",
+    "list_release_notes",
+    "list_release_pipelines",
+    "list_releases",
+    "list_teams",
+    "list_templates",
+    "list_users",
+    "search",
+    "search_documentation",
 }
+LINEAR_TICKET_OPERATIONS = {"create_issue", "update_issue", "save_issue"}
+
+
+def _linear_permission(target: str, *, may_edit: bool) -> PolicyResponse | None:
+    # Native hooks preserve the separator flattened by JavaScript aliases.
+    for prefix in ("mcp__codex_apps__linear__", "mcp__codex_apps__linear_"):
+        if target.startswith(prefix):
+            operation = target.removeprefix(prefix)
+            if operation in LINEAR_READ_OPERATIONS or (
+                may_edit and operation in LINEAR_TICKET_OPERATIONS
+            ):
+                return {"result": "ALLOW"}
+            return _deny("Linear action is not allowed for this workflow role")
+    return None
+
+
 _REVIEW = {stage for stage in STAGES if stage.startswith(("review-", "verify-", "final-"))}
 
 
@@ -284,6 +339,12 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         return {"result": "ALLOW"}
     if event.get("type") != "tool_call":
         return {"result": "ALLOW"}
+    linear = _linear_permission(
+        target,
+        may_edit=pending["stage"].split("/")[-1] in {"implement", "fix-a", "fix-b", "fix-c"},
+    )
+    if linear is not None:
+        return linear
     if target.startswith("workflow_") or target in {
         "sys_session_send",
         "sys_session_create",
@@ -633,6 +694,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
         root_id = context.get("root_conversation_id") or session_id
         if root_id != session_id:
             return _worker_policy(event, root_id, session_id)
+        if phase in {"tool_call", "tool_result"}:
+            linear = _linear_permission(str(target or ""), may_edit=True)
+            if linear is not None:
+                return linear if phase == "tool_call" else {"result": "ALLOW"}
         state = cast(
             Json,
             copy.deepcopy(event.get("session_state", {}).get(STATE_KEY) or {"status": "idle"}),
@@ -818,8 +883,6 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     )
             return _result(state)
         if phase == "tool_call":
-            if target in PREPARATION_READ_TOOLS and state["status"] == "idle":
-                return _result(state)
             if target == "workflow_draft" and state["status"] == "idle":
                 state.pop("draft", None)
                 data = event.get("data")
