@@ -333,7 +333,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 "block": True,
             },
         ],
-        match=f"Stage: {first_stage}\n",
+        match=f"Stage: a/{first_stage}\n",
     )
     configure_mock_llm(
         mock_llm_server_url,
@@ -430,7 +430,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
             configure_mock_llm(
                 mock_llm_server_url,
                 [*child_calls, {"text": json.dumps(report), "block": True}],
-                match=f"Stage: {stage}\n",
+                match=f"Stage: a/{stage}\n",
             )
         wake_calls = [_tool("sys_read_inbox", f"{marker}-inbox"), snapshot(f"{marker}-after")]
         if index < len(groups) - 1:

@@ -587,6 +587,7 @@ async def _recover_subagent_results_from_server(
             agent=str(child.get("tool") or child.get("agent_name") or "sub-agent"),
             title=str(child.get("session_name") or ""),
             work_id=dispatch_id,
+            wrapper_label=(labels.get("omnigent.wrapper") if isinstance(labels, dict) else None),
         )
         if interrupted:
             # This dispatch already existed; a local launch timeout cannot judge it.

@@ -1065,3 +1065,83 @@ async def test_recovered_pending_child_outlives_launch_timeout_and_delivers_orig
     assert late.delivered and not late.delivered_now
     assert inbox.empty()
     assert child["runner_id"] == "other-live-runner"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", [None, "codex-native-ui-subagent"])
+@pytest.mark.parametrize("recovery", ["none", "snapshot", "scan"])
+async def test_codex_parent_wakes_for_dispatched_workers_only(
+    _clean_subagent_registry: None,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper: str | None,
+    recovery: str,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    body = _child_snapshot(sub_agent_name="worker", parent_session_id=PARENT_SESSION_ID)
+    body["labels"] = {"omnigent.wrapper": wrapper} if wrapper else {}
+    monkeypatch.setattr(runner_app, "_launch_native_terminal", AsyncMock(return_value=True))
+    wake = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner_app, "_deliver_subagent_wake_post", wake)
+
+    async def resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        return AgentSpec(
+            spec_version=1,
+            name="controller",
+            executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+        )
+
+    app = create_runner_app(
+        process_manager=_FakeProcessManager(_ScriptedHarnessClient([])),
+        spec_resolver=resolver,
+        server_client=(
+            _RecoveryServerClient(
+                children=[
+                    _child_summary(
+                        labels={
+                            subagent_work.SUBAGENT_DISPATCH_ID_LABEL_KEY: DISPATCH_ID,
+                            **body["labels"],
+                        }
+                    )
+                ],
+                child_items=[_CHILD_RESULT_ITEM],
+            )
+            if recovery == "scan"
+            else _SnapshotServerClient(body)
+        ),
+    )
+    async with _runner_client(app) as client:
+        parent = await client.post(
+            "/v1/sessions", json={"session_id": PARENT_SESSION_ID, "agent_id": "ag_parent"}
+        )
+        assert parent.status_code == 201, parent.text
+        if recovery == "none":
+            subagent_work.register_subagent_work(
+                parent_session_id=PARENT_SESSION_ID,
+                child_session_id=CHILD_SESSION_ID,
+                agent="worker",
+                title="implementation/implement/1",
+                wrapper_label=wrapper,
+            )
+        for _ in range(2):
+            if recovery == "scan":
+                await app.state.recover_undrained_subagent_results(PARENT_SESSION_ID)
+                await asyncio.sleep(0)
+                continue
+            response = await client.post(
+                f"/v1/sessions/{CHILD_SESSION_ID}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {
+                        "status": "idle",
+                        "turn_outcome": "completed",
+                        "output": "Need a decision",
+                    },
+                },
+            )
+            assert response.status_code == 204, response.text
+            await asyncio.sleep(0)
+        assert wake.await_count == (0 if wrapper else 1)
+        if not wrapper:
+            assert wake.call_args.args[1] == PARENT_SESSION_ID
+            assert "finished" in wake.call_args.args[2]

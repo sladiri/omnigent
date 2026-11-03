@@ -478,6 +478,8 @@ def _brief(state: Json) -> str:
             "Return only JSON: stage, outcome (COMPLETE/NEEDS_INPUT/BLOCKED), evidence "
             "(nonempty string), findings (list of {id,message}), resolved (list of finding "
             "IDs). NEEDS_INPUT/BLOCKED also needs question.",
+            f'Copy the exact stage ID into the report: "stage": {json.dumps(state["current"])}. '
+            "Do not shorten it to the operation name.",
             "COMPLETE attests required checks passed. Rechecks must inspect actual revised "
             "code. Missing skills or unavailable required delegation are BLOCKED, never "
             "silently skip them.",
@@ -986,7 +988,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                         f"Stage: {current}\n"
                         "Read workflow_stage and return its report. Do not create a goal."
                         if current in comparison.ANALYSIS_STAGES
-                        else f"/goal Stage: {current.rsplit('/', 1)[-1]}\n"
+                        else f"/goal Stage: {current}\n"
                         "Produce the final report for your assigned workflow stage. "
                         "First call workflow_stage for the complete task, worktree, checks, "
                         "and report contract. Work only on that stage. Continue until its "
@@ -1135,12 +1137,13 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             or not isinstance(result.get("evidence"), str)
             or not result["evidence"].strip()
         ):
-            result = {
-                "stage": pending["stage"],
-                "outcome": "BLOCKED",
-                "question": "Worker returned invalid stage evidence",
-                "evidence": "Invalid worker response",
-            }
+            question = result.get("question")
+            result.update(
+                stage=pending["stage"],
+                outcome="BLOCKED",
+                question="Worker returned invalid stage evidence"
+                + (f". Worker question: {question}" if isinstance(question, str) else ""),
+            )
         if result.get("outcome") == "COMPLETE":
             try:
                 _findings(result)
