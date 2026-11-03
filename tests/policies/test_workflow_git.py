@@ -124,3 +124,41 @@ def test_worker_worktree_limits_and_read_only_ancestry(repository, worker_git):
     state["status"] = "running"
     state["pending"]["stopped"] = True
     assert call("git worktree add ../new")["result"] == "DENY"
+
+
+@pytest.mark.parametrize("tool", ["exec_command", "sys_os_shell", "Bash"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --no-pager show HEAD:deploy/k8s/tests/push-render.sh",
+        "git --no-pager diff -- deploy/k8s/charts/push",
+        "git log --grep='commit or reset' --oneline",
+        "git status && rg 'commit|push|reset' README.md",
+        "/usr/bin/env git -c color.ui=false --no-pager show HEAD:docs/rebase.md",
+        "bash -lc 'git --no-pager show HEAD:deploy/k8s/tests/push-render.sh'",
+    ],
+)
+def test_worker_git_reads_do_not_classify_arguments_as_commands(worker_git, tool, command):
+    _, call = worker_git
+    assert call(command, tool=tool, prefix=True)["result"] == "ALLOW"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --no-pager diff -- README.md && git commit -am change",
+        "bash -lc 'git status && git reset --hard HEAD'",
+        "/usr/bin/env git -c color.ui=false push origin main",
+        "/usr/bin/git --no-pager cherry-pick HEAD",
+        "git -C . merge main",
+        "git log --oneline; git rebase main",
+        "bash -lc 'git status' && git commit -am change",
+        "if true; then git commit -am change; fi",
+        "git -c alias.save='!git commit -am change' save",
+        "git -c core.pager='git commit -am change' log",
+        "echo $(git commit -am change)",
+    ],
+)
+def test_worker_still_denies_git_mutations_after_reads(worker_git, command):
+    _, call = worker_git
+    assert call(command, prefix=True)["result"] == "DENY"
