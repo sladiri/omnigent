@@ -159,9 +159,13 @@ final-b-standards + final-b-spec
 ```
 
 A and C use the installed `ponytail` and `ponytail-review` skills. B uses the
-installed `code-review` skill. Its Standards and Spec subreviews must remain
-independent. The controller dispatches each pair in parallel to separate fresh
-worker sessions and waits for both reports. Missing required skills block the
+installed `code-review` skill. The worker grants file-tool reads to these skill
+directories and `compare-solutions` under `~/.agents/skills`, `~/.codex/skills`,
+and `~/.claude/skills`, including their resolved symlink targets and resource
+files. These grants do not permit writes or reads of unrelated sibling files.
+The Standards and Spec subreviews must remain independent. The controller
+dispatches each pair in parallel to separate fresh worker sessions and waits
+for both reports. Missing required skills block the
 stage. Reviews inspect the complete
 working-tree change and connected code against the saved baseline. They do not
 require an intermediate commit.
@@ -199,8 +203,13 @@ After a restart, `workflow_status` and `workflow_reconcile` can recover a saved
 `NEEDS_INPUT` report from the assigned idle native worker. Recovery opens the user
 decision gate; it never treats idle alone as completion or advances successful work.
 
-Other workers also wait when they need a decision. Unrelated messages, runtime
-wakes, and goal continuations are not answers. `/workflow retry` cannot bypass a
+Other workers also wait when they need a decision. A stopped stage in `blocked`
+shows **Answer** too. Submit recovery instructions to retry the same stage through
+its snapshot checks. The answer records instructions; it does not itself grant
+access, change the baseline, or assign a companion repository. Resolve those
+capability blockers before retrying. Pending or uncertain workers require
+reconciliation first. Design and final-selection gates retain their own commands.
+Unrelated messages, runtime wakes, and goal continuations are not answers. `/workflow retry` cannot bypass a
 review decision; it only retries a blocked terminal stage after you resolve its
 blocker. Fix attempts are bounded by `max_attempts` in config.
 To abandon a candidate blocked or waiting at review, send
@@ -221,8 +230,9 @@ original worktree; its fixes are present there.
 Explicit workflow workers wake the controller when they finish, including native
 Codex controllers. Codex internal side chats do not send workflow inbox wakes.
 If a worker returns an invalid stage ID, the workflow blocks and preserves its
-question and evidence. Use `/workflow retry` to request a corrected report; this
-is not an answer to the worker's question.
+question and evidence. Use **Answer** to supply recovery instructions or
+`/workflow retry` to request a corrected report. Either repeats the stage;
+neither accepts the invalid evidence as completion.
 
 Resume the original coordinator session after interruption. Ask it to drain its
 inbox and report the saved workflow state. `workflow_status` reads its durable

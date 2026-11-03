@@ -10,6 +10,20 @@ os_env:
   cwd: .
   sandbox:
     type: none
+    # File tools need explicit grants for skills installed outside the candidate.
+    read_paths:
+      - ~/.agents/skills/ponytail
+      - ~/.agents/skills/ponytail-review
+      - ~/.agents/skills/code-review
+      - ~/.agents/skills/compare-solutions
+      - ~/.codex/skills/ponytail
+      - ~/.codex/skills/ponytail-review
+      - ~/.codex/skills/code-review
+      - ~/.codex/skills/compare-solutions
+      - ~/.claude/skills/ponytail
+      - ~/.claude/skills/ponytail-review
+      - ~/.claude/skills/code-review
+      - ~/.claude/skills/compare-solutions
 prompt: |
   First call workflow_stage to obtain the complete brief. For exploration and
   result comparison, follow its read-only contract and do not create a goal.
