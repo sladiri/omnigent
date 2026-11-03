@@ -31,6 +31,25 @@ only the controller decides whether that report passes the stage gate. A missing
 user decision stops dependent work and leaves the controller waiting for an
 answer. Answers and retries start a fresh worker for the same stage.
 
+Workers can read files and list directories throughout the original repository
+with `workflow_read`. The controller supplies the source path; the tool resolves
+session subfolders to the Git root. Absolute paths and paths relative to that
+root are accepted. Symlinks and traversal outside the root are rejected.
+This includes shared local instructions and other monorepo services. Source
+writes and commands remain restricted to the assigned candidate. Paused or
+inactive workers cannot use this read access. Reads do not advance any gate.
+
+Beads journaling uses the bundled `workflow_journal` tool. It resolves an existing
+`.beads` in the assigned worktree, or in Git's main checkout when absent locally.
+Its `instructions` action returns `.beads/PRIME.md`. It lists, reads, creates,
+claims, comments on, and optionally closes session journals labeled
+`session,agent-journal`. It does not initialize journals or edit ordinary tracker
+tasks. If neither checkout has a journal, journaling is skipped.
+The controller can journal at any state once its repository is known. Active
+workers, including review and comparison workers, can record journal entries.
+Stopped or inactive workers remain blocked. Journaling grants no source-write
+access and does not count as approval or change workflow state.
+
 ## Start a run
 
 In the Web UI, select the installed `workflow-controller` agent. Use `implement`
@@ -218,7 +237,11 @@ capability blockers before retrying. Pending or uncertain workers require
 reconciliation first. Design and final-selection gates retain their own commands.
 Unrelated messages, runtime wakes, and goal continuations are not answers. `/workflow retry` cannot bypass a
 review decision; it only retries a blocked terminal stage after you resolve its
-blocker. Fix attempts are bounded by `max_attempts` in config.
+blocker. Automatic attempts are bounded by `max_attempts` in config. An explicit
+Answer, retry, or reconciled retry-dispatch permits one additional attempt of the
+same stage, including its paired reviewer. This permission survives restart and
+is consumed by dispatch. It does not reset the attempt history, approve a new
+design, or bypass a review or publication gate.
 To abandon a candidate blocked or waiting at review, send
 `/workflow reject <id> <reason>`. The controller preserves its worktree and
 advances to the next candidate. Rejected

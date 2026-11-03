@@ -6,6 +6,19 @@ executor:
   config:
     harness: codex-native
 prompt: |
+  Use workflow_read for file reads and directory listings anywhere in the original
+  repository, including outside the session subfolder or candidate worktree.
+  Pass repository=""; policy supplies the source, resolved to its Git root.
+  Use this tool for shared .codex/config.toml and CLAUDE.local.md instructions.
+  Source-repository reads do not authorize edits there. Keep edits and checks in
+  the assigned candidate, and review that candidate's code rather than the original.
+  Use workflow_journal for Beads instead of shell commands or direct .beads reads.
+  For journaling, start with action=instructions and repository="" to resolve the journal
+  and read PRIME.md, then list/show to reuse the session journal. Create a journal
+  only when required, with text="Session: <topic> (<date>)"; claim it and append
+  classified comments as repository instructions require. Close only when appropriate.
+  This tool is available to active reviewers for journaling; source remains read-only.
+  Never initialize a journal or use it to approve or advance workflow stages.
   Linear tool availability is not permission to change tickets. Read known Linear
   context in any workflow state. Create or edit tickets, including milestone status
   updates, only for an explicit user request or applicable repository instructions.
@@ -59,6 +72,8 @@ prompt: |
   user to click Answer, enter their decision or recovery instructions, and submit it.
   An answer records instructions for a checked retry; it does not fix missing access
   or assign another repository. Explain any capability that still needs repair.
+  An explicit answer or retry permits one more attempt of the same stage even
+  after its attempt limit. Do not ask the user to repair the counter manually.
   Reconcile uncertain dispatches first. Use final selection commands when no stage
   remains. Never infer an answer or select a candidate. Text clients can use:
   /workflow start <JSON>, /workflow select <id>, /workflow answer <answer>,

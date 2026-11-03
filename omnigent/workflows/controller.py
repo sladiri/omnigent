@@ -177,6 +177,7 @@ def _candidate(state: Json) -> Json:
 
 def _set_stage(state: Json, candidate: Json, stage: str) -> None:
     state.pop("parallel", None)
+    state.pop("retry_authorization", None)
     state.update(
         current=f"{candidate['id']}/{stage}",
         status="snapshot",
@@ -184,6 +185,16 @@ def _set_stage(state: Json, candidate: Json, stage: str) -> None:
         attempt=1,
         pending=None,
     )
+
+
+def _retry_stage(state: Json) -> None:
+    state.update(
+        status="ready" if state.get("current") in comparison.ANALYSIS_STAGES else "snapshot",
+        snapshot_for="before",
+        attempt=state.get("attempt", 1) + 1,
+        question=None,
+    )
+    state["retry_authorization"] = {"stage": state["current"], "attempt": state["attempt"]}
 
 
 def _pending(state: Json) -> list[Json]:
@@ -350,6 +361,31 @@ def draft_preview(session_state: Json) -> Json:
     }
 
 
+def _repository_read_permission(event: PolicyEvent, repository: str | None) -> PolicyResponse:
+    if event.get("type") == "tool_result":
+        return {"result": "ALLOW"}
+    data = event.get("data")
+    args = data.get("arguments", {}) if isinstance(data, dict) else {}
+    if not isinstance(args, dict) or not repository or not Path(repository).is_absolute():
+        return _deny("Select a source repository before reading it")
+    return {"result": "ALLOW", "data": {**args, "repository": repository}}
+
+
+def _journal_permission(event: PolicyEvent, repository: str | None) -> PolicyResponse:
+    """Bind journal operations to the assigned repository without changing workflow state."""
+    from omnigent.workflows.journal import ACTIONS
+
+    if event.get("type") == "tool_result":
+        return {"result": "ALLOW"}
+    data = event.get("data")
+    args = data.get("arguments", {}) if isinstance(data, dict) else {}
+    if not isinstance(args, dict) or args.get("action") not in ACTIONS:
+        return _deny("Use a supported workflow_journal action")
+    if not repository or not Path(repository).is_absolute():
+        return _deny("Select a repository before journaling")
+    return {"result": "ALLOW", "data": {**args, "repository": repository}}
+
+
 def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyResponse:
     """Grant tools only to the recorded worker for the outstanding stage."""
     from omnigent.runtime import get_conversation_store
@@ -387,6 +423,11 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     github = _github_permission(event)
     if github is not None:
         return github
+    if target == "workflow_read":
+        return _repository_read_permission(event, state.get("definition", {}).get("repository"))
+    if target == "workflow_journal":
+        workspace = _candidate({**state, "current": pending["stage"]})["workspace"]
+        return _journal_permission(event, workspace)
     if target.startswith("workflow_") or target in {
         "sys_session_send",
         "sys_session_create",
@@ -937,6 +978,22 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             Json,
             copy.deepcopy(event.get("session_state", {}).get(STATE_KEY) or {"status": "idle"}),
         )
+        if target in {"workflow_journal", "workflow_read"} and phase in {
+            "tool_call",
+            "tool_result",
+        }:
+            from omnigent.runtime import get_conversation_store
+
+            definition = (
+                state.get("definition") or (state.get("draft") or {}).get("definition") or {}
+            )
+            repository = definition.get("repository")
+            if not repository:
+                session = get_conversation_store().get_conversation(session_id)
+                repository = session.workspace if session else None
+            if target == "workflow_read":
+                return _repository_read_permission(event, repository)
+            return _journal_permission(event, repository)
         if state["status"] == "cancelled":
             if phase == "tool_call" and target not in READ_TOOLS:
                 return _deny("This workflow was cancelled")
@@ -1045,17 +1102,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                         "review": review_wait,
                     }
                 )
-                state.update(
-                    answer=answer,
-                    status="snapshot",
-                    snapshot_for="before",
-                    attempt=state["attempt"] + 1,
-                    question=None,
-                )
+                state["answer"] = answer
+                _retry_stage(state)
                 if review_wait.get("next_stage"):
                     _set_stage(state, _candidate(state), review_wait["next_stage"])
-                if state.get("current") in comparison.ANALYSIS_STAGES:
-                    state["status"] = "ready"
             elif text == "/workflow retry-dispatch":
                 if (
                     state["status"] != "blocked"
@@ -1076,13 +1126,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     return _result(state)
                 if _retire_dispatches(state):
                     return _result(state)
-                state.update(
-                    status="snapshot",
-                    snapshot_for="before",
-                    attempt=state["attempt"] + 1,
-                )
-                if state.get("current") in comparison.ANALYSIS_STAGES:
-                    state["status"] = "ready"
+                _retry_stage(state)
             elif text.startswith("/workflow reject "):
                 parts = text.removeprefix("/workflow reject ").split(" ", 1)
                 if (
@@ -1114,17 +1158,13 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 ):
                     return _deny("No candidate remains; start a new workflow session")
                 if state.get("current") in comparison.ANALYSIS_STAGES:
-                    state.update(status="ready", attempt=state.get("attempt", 1) + 1)
+                    _retry_stage(state)
                 elif state.get("selected"):
                     state.update(status="snapshot", snapshot_for="selection")
                 elif not state.get("candidates"):
                     state["status"] = "prepare"
                 else:
-                    state.update(
-                        status="snapshot",
-                        snapshot_for="before",
-                        attempt=state.get("attempt", 1) + 1,
-                    )
+                    _retry_stage(state)
             return _result(state)
         if phase == "tool_call":
             if target == "workflow_review_checkout":
@@ -1203,14 +1243,20 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 state["status"] != "ready" and not (state["status"] == "running" and paired_stage)
             ):
                 return _deny("Action is not allowed in the current workflow state")
-            if state["attempt"] > max_attempts + 1:
+            retry_authorized = state.get("retry_authorization") == {
+                "stage": state["current"],
+                "attempt": state["attempt"],
+            }
+            # The paired reviewer belongs to the already authorized dispatch.
+            if not (retry_authorized or paired_stage) and state["attempt"] > max_attempts + 1:
                 return {**_block(state, "Stage attempt limit reached"), "result": "DENY"}
             stage = _stage(state)
             if stage.startswith("fix-"):
                 count = state["fix_attempts"].get(state["current"], 0)
-                if count >= max_attempts:
+                if count >= max_attempts and not retry_authorized:
                     return {**_block(state, "Fix attempt limit reached"), "result": "DENY"}
                 state["fix_attempts"][state["current"]] = count + 1
+            state.pop("retry_authorization", None)
             # A nonce prevents a revisited stage from continuing an old child turn.
             serial = state.get("dispatch_serial", 0) + 1
             current = paired_stage or state["current"]
