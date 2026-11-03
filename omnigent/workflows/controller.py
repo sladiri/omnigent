@@ -11,10 +11,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 
+from omnigent.entities import Conversation
 from omnigent.policies.builtins.github import github_policy
 from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
 from omnigent.policies.builtins.working_dir import block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
+from omnigent.stores import ConversationStore
 from omnigent.workflows import comparison
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
@@ -308,12 +310,25 @@ def draft_start_message(
     return json.dumps({"valid": True, "command": "/workflow start " + json.dumps(definition)})
 
 
+def question_preview(state: Json) -> Json | None:
+    """Bind the UI answer to this exact persisted stage question."""
+    if state.get("status") != "waiting-user" or not state.get("question"):
+        return None
+    identity = {
+        key: state.get(key) for key in ("definition", "current", "attempt", "revision", "question")
+    }
+    return {
+        "token": uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(identity, sort_keys=True)).hex,
+        "text": state["question"],
+    }
+
+
 def draft_preview(session_state: Json) -> Json:
     """Return only the current draft details needed for user approval."""
     state = session_state.get(STATE_KEY, {})
     draft = state.get("draft") if state.get("status") == "idle" else None
     if not draft:
-        return {"draft": None}
+        return {"draft": None, "question": question_preview(state)}
     definition = draft["definition"]
     return {
         "draft": {
@@ -699,6 +714,149 @@ def _retire_dispatches(state: Json) -> bool:
     return False
 
 
+def _accept_worker_result(
+    state: Json, pending: Json, result: Json, metadata: Json, child_id: str
+) -> PolicyResponse:
+    """Apply live and recovered reports through the same workflow gates."""
+    if pending is state.get("pending"):
+        state["pending"] = None
+    else:
+        state["parallel"]["pending"] = None
+    state["last_result"] = {**metadata, "child_id": child_id}
+    result["dispatch"] = {
+        **state["last_result"],
+        "title": pending["title"],
+    }
+    if (
+        result.get("outcome") == "NEEDS_INPUT"
+        and result.get("stage") == pending["stage"].rsplit("/", 1)[-1]
+    ):
+        result["stage"] = pending["stage"]
+    if (
+        result.get("stage") != pending["stage"]
+        or not isinstance(result.get("evidence"), str)
+        or not result["evidence"].strip()
+    ):
+        question = result.get("question")
+        result.update(
+            stage=pending["stage"],
+            outcome="BLOCKED",
+            question="Worker returned invalid stage evidence"
+            + (f". Worker question: {question}" if isinstance(question, str) else ""),
+        )
+    if result.get("outcome") == "COMPLETE":
+        try:
+            _findings(result)
+            resolved = result.get("resolved")
+            if not isinstance(resolved, list) or not all(
+                isinstance(item, str) and item.strip() for item in resolved
+            ):
+                raise ValueError("Resolved findings must be a list of IDs")
+        except ValueError as exc:
+            result.update(outcome="BLOCKED", question=f"Invalid stage evidence: {exc}")
+    if result.get("outcome") != "COMPLETE":
+        state.setdefault("incomplete", {})[pending["stage"]] = result
+    reports = {pending["stage"]: result}
+    parallel = state.get("parallel")
+    if parallel:
+        parallel["reports"][pending["stage"]] = result
+        if _pending(state) or parallel["next"]:
+            return _result(state)
+        reports = parallel["reports"]
+        result = next(
+            (
+                report
+                for report in reports.values()
+                if report.get("outcome") == "NEEDS_DESIGN_APPROVAL"
+            ),
+            next(
+                (report for report in reports.values() if report.get("outcome") != "COMPLETE"),
+                parallel["reports"][state["current"]],
+            ),
+        )
+    if result.get("outcome") != "COMPLETE" and _wait_for_review(state, reports):
+        state.pop("parallel", None)
+        state.setdefault("incomplete", {}).update(reports)
+        return _result(state)
+    if result.get("outcome") == "NEEDS_DESIGN_APPROVAL" and comparison.enabled(state):
+        if _pending(state):
+            return _block(
+                state, "Stop and reconcile the remaining workers before revising designs"
+            )
+        state.update(
+            status="waiting-design-revision",
+            question=result.get("question")
+            or "Revise the design proposals before implementing a different approach",
+        )
+        return _result(state)
+    if result.get("outcome") != "COMPLETE":
+        state.pop("parallel", None)
+        if (
+            result.get("outcome") not in {"BLOCKED", "NEEDS_INPUT"}
+            or not isinstance(result.get("question"), str)
+            or not result["question"].strip()
+        ):
+            return _block(state, "Worker returned invalid outcome")
+        state.update(
+            status="waiting-user" if result["outcome"] == "NEEDS_INPUT" else "blocked",
+            question=result["question"],
+        )
+        return _result(state)
+    if state.get("current") in comparison.ANALYSIS_STAGES:
+        try:
+            comparison.accept(state, result)
+        except (ValueError, TypeError, KeyError) as exc:
+            return _block(state, f"Invalid comparison: {exc}")
+        return _result(state)
+    state.update(status="snapshot", snapshot_for="after", report=result)
+    return _result(state)
+
+
+def _recover_worker_question(
+    store: ConversationStore, child: Conversation, pending: Json
+) -> Json | None:
+    """Recover a question, never success, from an idle native worker's last item."""
+    if (
+        pending.get("terminal_status") in {"failed", "cancelled"}
+        or child.live_status != "idle"
+        or child.labels.get("omnigent.wrapper") != "codex-native-ui"
+        or not child.labels.get("omnigent.subagent.dispatch_id")
+        or (pending.get("child_id") and pending["child_id"] != child.id)
+    ):
+        return None
+    items = store.list_items(child.id, limit=1, order="desc").data
+    if not items:
+        return None
+    item = items[0].to_api_dict()
+    if (
+        item.get("type") != "message"
+        or item.get("role") != "assistant"
+        or item.get("status") != "completed"
+        or item.get("interrupted")
+    ):
+        return None
+    try:
+        report = json.loads(
+            "\n".join(
+                block.get("text", "")
+                for block in item.get("content", [])
+                if block.get("type") in {"text", "output_text"}
+            )
+        )
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(report, dict) or report.get("outcome") != "NEEDS_INPUT":
+        return None
+    if report.get("stage") not in {pending["stage"], pending["stage"].rsplit("/", 1)[-1]}:
+        return None
+    if not all(
+        isinstance(report.get(key), str) and report[key].strip()
+        for key in ("question", "evidence")
+    ):
+        return None
+    return report
+
+
 def _reconcile(state: Json, root_id: str) -> PolicyResponse:
     from omnigent.runtime import get_conversation_store
 
@@ -722,6 +880,22 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
             )
         if matching:
             child = matching[0]
+            if pending.get("child_id") and pending["child_id"] != child.id:
+                return _block(state, "Recovered child does not match the saved dispatch")
+            report = _recover_worker_question(store, child, pending)
+            if report is not None:
+                _accept_worker_result(
+                    state,
+                    pending,
+                    report,
+                    {
+                        "status": "completed",
+                        "work_id": child.labels["omnigent.subagent.dispatch_id"],
+                        "recovered": True,
+                    },
+                    child.id,
+                )
+                continue
             pending["child_id"] = child.id
             if child.live_status == "failed" or (
                 child.live_status == "idle"
@@ -736,6 +910,9 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
                 pending["reconciled_unstarted"] = True
         else:
             pending["reconciled_absent"] = True
+    outstanding = _pending(state)
+    if not outstanding:
+        return _result(state, data=json.dumps(state))
     if all(item.get("stopped") for item in outstanding):
         if _retire_dispatches(state):
             return _result(state)
@@ -798,6 +975,14 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             if not isinstance(event.get("data"), dict) or context.get("harness") is not None:
                 return {"result": "ALLOW"}
             text = request_user_text(event.get("data")).strip()
+            if text.startswith("/workflow answer-question "):
+                token, _, answer = text.removeprefix("/workflow answer-question ").partition(" ")
+                question = question_preview(state)
+                if not question or question["token"] != token:
+                    return _deny(
+                        "This workflow question changed; review it again before answering"
+                    )
+                text = "/workflow answer " + answer
             if text.startswith("/workflow start-draft "):
                 draft = state.get("draft")
                 if (
@@ -1108,6 +1293,8 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 }
             return _result(state)
         if target == "workflow_status":
+            if _pending(state) and state["status"] == "running":
+                _reconcile(state, session_id)
             status = dict(state)
             if state["status"] == "idle":
                 status["next_action"] = (
@@ -1215,93 +1402,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 state,
                 "Worker failed or was cancelled; call workflow_reconcile to confirm it stopped",
             )
-        if pending is state.get("pending"):
-            state["pending"] = None
-        else:
-            state["parallel"]["pending"] = None
-        state["last_result"] = {**metadata, "child_id": args["conversation_id"]}
-        result["dispatch"] = {
-            **state["last_result"],
-            "title": pending["title"],
-        }
-        if (
-            result.get("stage") != pending["stage"]
-            or not isinstance(result.get("evidence"), str)
-            or not result["evidence"].strip()
-        ):
-            question = result.get("question")
-            result.update(
-                stage=pending["stage"],
-                outcome="BLOCKED",
-                question="Worker returned invalid stage evidence"
-                + (f". Worker question: {question}" if isinstance(question, str) else ""),
-            )
-        if result.get("outcome") == "COMPLETE":
-            try:
-                _findings(result)
-                resolved = result.get("resolved")
-                if not isinstance(resolved, list) or not all(
-                    isinstance(item, str) and item.strip() for item in resolved
-                ):
-                    raise ValueError("Resolved findings must be a list of IDs")
-            except ValueError as exc:
-                result.update(outcome="BLOCKED", question=f"Invalid stage evidence: {exc}")
-        if result.get("outcome") != "COMPLETE":
-            state.setdefault("incomplete", {})[pending["stage"]] = result
-        reports = {pending["stage"]: result}
-        parallel = state.get("parallel")
-        if parallel:
-            parallel["reports"][pending["stage"]] = result
-            if _pending(state) or parallel["next"]:
-                return _result(state)
-            reports = parallel["reports"]
-            result = next(
-                (
-                    report
-                    for report in reports.values()
-                    if report.get("outcome") == "NEEDS_DESIGN_APPROVAL"
-                ),
-                next(
-                    (report for report in reports.values() if report.get("outcome") != "COMPLETE"),
-                    parallel["reports"][state["current"]],
-                ),
-            )
-        if result.get("outcome") != "COMPLETE" and _wait_for_review(state, reports):
-            state.pop("parallel", None)
-            state.setdefault("incomplete", {}).update(reports)
-            return _result(state)
-        if result.get("outcome") == "NEEDS_DESIGN_APPROVAL" and comparison.enabled(state):
-            if _pending(state):
-                return _block(
-                    state, "Stop and reconcile the remaining workers before revising designs"
-                )
-            state.update(
-                status="waiting-design-revision",
-                question=result.get("question")
-                or "Revise the design proposals before implementing a different approach",
-            )
-            return _result(state)
-        if result.get("outcome") != "COMPLETE":
-            state.pop("parallel", None)
-            if (
-                result.get("outcome") not in {"BLOCKED", "NEEDS_INPUT"}
-                or not isinstance(result.get("question"), str)
-                or not result["question"].strip()
-            ):
-                return _block(state, "Worker returned invalid outcome")
-            state.update(
-                status="waiting-user" if result["outcome"] == "NEEDS_INPUT" else "blocked",
-                question=result["question"],
-            )
-            return _result(state)
-        if state.get("current") in comparison.ANALYSIS_STAGES:
-            try:
-                comparison.accept(state, result)
-            except (ValueError, TypeError, KeyError) as exc:
-                return _block(state, f"Invalid comparison: {exc}")
-            return _result(state)
-        state.update(status="snapshot", snapshot_for="after", report=result)
-        return _result(state)
+        return _accept_worker_result(state, pending, result, metadata, args["conversation_id"])
 
     return evaluate
 

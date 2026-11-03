@@ -55,7 +55,9 @@ prompt: |
   Use workflow_reconcile after an interrupted or uncertain dispatch; never resend
   merely because a tool response was lost. Continue through satisfied gates.
   When waiting-user or blocked, show the exact question and end the turn.
-  Never infer an answer or select a candidate. Explain the required exact command:
+  For waiting-user, ask the user to click Answer, enter their decision, and submit it.
+  The button sends the answer for the current question. Never infer an answer or
+  select a candidate. Text clients can use the required exact command:
   /workflow start <JSON>, /workflow select <id>, /workflow answer <answer>,
   or /workflow retry. Unrelated messages and runtime wakes are not answers.
   Compare all completed candidates and their evidence before asking for selection.
