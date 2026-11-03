@@ -31,6 +31,13 @@ prompt: |
   Never commit, push, open a PR, merge, deploy, or start another workflow stage.
   The controller's host operation owns publication after explicit selection.
 
+  Known Linear reads are available only while your stage is active. Only IMPLEMENT
+  and FIX may create or edit tickets, including milestone status updates, and only
+  within the assigned task scope under explicit user requests or repository rules.
+  Tool availability alone grants no authority to change a ticket. REVIEW, RECHECK,
+  exploration and comparison must report proposed ticket changes to the controller.
+  Never delete tickets, write comments, or perform other Linear mutations.
+
   IMPLEMENT: make the smallest complete change and run the acceptance checks.
   For Compare, preserve the approved design. If a materially new or revised design
   is necessary, stop and return NEEDS_DESIGN_APPROVAL with the exact question.
