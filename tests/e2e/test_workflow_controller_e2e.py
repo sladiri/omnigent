@@ -1048,7 +1048,9 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
                             "child_id": child.id,
                         },
                         "completed": {},
-                        "candidates": [{"id": "one", "workspace": str(tmp_path)}],
+                        "candidates": [
+                            {"id": "one", "workspace": str(tmp_path), "branch": "candidate"}
+                        ],
                     }
                 },
             )
@@ -1123,6 +1125,8 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
             )
             state.update(
                 status="running",
+                attempt=3,
+                dispatch_serial=3,
                 pending={"stage": "one/implement", "title": title, "child_id": next_child.id},
             )
             store.set_session_state(sid, {STATE_KEY: state})
@@ -1175,7 +1179,7 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
             resumed = store.get_conversation(sid).session_state[STATE_KEY]
             assert resumed["status"] == "snapshot"
             assert resumed["current"] == "one/implement"
-            assert resumed["attempt"] == 3
+            assert resumed["attempt"] == 4
             assert resumed["completed"] == {}
             assert resumed["definition"]["publish"] is False
             assert resumed["decisions"][-1]["question"] == blocked["question"]
@@ -1186,3 +1190,25 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
                 ]
                 == "POLICY_ACTION_DENY"
             )
+
+            # The explicit retry survives restart and permits exactly one new dispatch.
+            evaluate(
+                "PHASE_TOOL_RESULT",
+                {"result": json.dumps({"revision": "tree-1", "branch": "candidate"})},
+                {"name": "workflow_snapshot"},
+            )
+            stack.restart_server()
+            dispatch = evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})
+            assert dispatch["result"] == "POLICY_ACTION_ALLOW", dispatch
+            assert dispatch["data"]["title"] == "one/implement/4"
+            stack.restart_server()
+            persisted = store.get_conversation(sid).session_state[STATE_KEY]
+            assert persisted["status"] == "running"
+            assert persisted["attempt"] == 4
+            assert not persisted.get("retry_authorization")
+            assert persisted["completed"] == {}
+            for tool in ("sys_session_send", "workflow_publish"):
+                assert (
+                    evaluate("PHASE_TOOL_CALL", {"name": tool, "arguments": {}})["result"]
+                    == "POLICY_ACTION_DENY"
+                )

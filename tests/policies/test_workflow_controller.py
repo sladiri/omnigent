@@ -528,6 +528,9 @@ async def test_reconcile_empty_child_requires_user_confirmation_and_checks_again
 async def test_reconcile_absent_dispatch_allows_only_explicit_new_attempt(coding, monkeypatch):
     monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
     await begin(coding)
+    state = coding.state
+    state["attempt"] = 3
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     old = await coding.dispatch()
     await coding.evaluate(output("workflow_reconcile", {}))
     assert coding.state["status"] == "blocked"
@@ -556,17 +559,48 @@ async def test_reconcile_duplicate_children_revokes_prior_absent_confirmation(co
 
 
 @pytest.mark.asyncio
-async def test_attempt_limit_denies_dispatch_and_persists_blocked_state(coding):
+@pytest.mark.parametrize("stage", ["implement", "fix-a", "review-b-standards"])
+@pytest.mark.parametrize("command", ["answer", "retry"])
+async def test_explicit_retry_exceeds_limit_once_without_advancing_gates(coding, stage, command):
+    from omnigent.workflows.controller import question_preview
+
     await begin(coding)
-    for _ in range(3):
-        await finish(coding, outcome="NEEDS_INPUT")
-        await coding.evaluate(_request("/workflow answer clarified"))
-        await snapshot(coding)
-    result = await coding.evaluate(_call())
-    assert result.action == PolicyAction.DENY
+    state = coding.state
+    state.update(current=f"one/{stage}", attempt=1 if stage == "fix-a" else 4, dispatch_serial=3)
+    state["fix_attempts"][state["current"]] = 2
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state["status"] == "blocked"
-    assert coding.state["pending"] is None
-    assert coding.state["dispatch_serial"] == 3
+    question = question_preview(coding.state)
+    assert question
+    for text in ("Continue", "/workflow answer-question stale Retry"):
+        await coding.evaluate(_request(text))
+        assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    text = (
+        f"/workflow answer-question {question['token']} Access is fixed; retry"
+        if command == "answer"
+        else "/workflow retry"
+    )
+    assert (await coding.evaluate(_request(text))).action == PolicyAction.ALLOW
+    assert coding.state["status"] == "snapshot"
+    assert coding.state["attempt"] == state["attempt"] + 1
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    await snapshot(coding)
+    dispatched = await coding.dispatch()
+    assert dispatched["title"] == f"one/{stage}/4"
+    assert coding.state["completed"] == {}
+    assert coding.state["verified"] == {}
+    assert coding.state["selected"] is None
+    assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+    if stage.endswith("standards"):
+        paired = await coding.dispatch()
+        assert paired["title"] == "one/review-b-spec/5"
+        await coding.evaluate(_completion(paired["title"], outcome="BLOCKED"))
+    await coding.evaluate(_completion(dispatched["title"], outcome="BLOCKED"))
+    assert coding.state["status"] == ("waiting-user" if stage.endswith("standards") else "blocked")
+    assert not coding.state.get("retry_authorization")
+    await coding.evaluate(_request("[System: worker wake]"))
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
 
 
 @pytest.mark.asyncio
