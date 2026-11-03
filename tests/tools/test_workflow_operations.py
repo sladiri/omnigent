@@ -482,3 +482,101 @@ def test_draft_branch_reaches_real_worktree(repository):
         == "feature/lcs-1670"
     )
     assert operations._git(repository, "branch", "--show-current") == "main"
+
+
+@pytest.fixture
+def review_pr(repository, tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    operations._git(tmp_path, "clone", "--no-hardlinks", str(repository), str(checkout))
+    operations._git(checkout, "remote", "set-url", "origin", "git@github.com:org/repo.git")
+    operations._git(
+        checkout, "config", f"url.{repository}.insteadOf", "git@github.com:org/repo.git"
+    )
+    baseline = operations._git(repository, "rev-parse", "HEAD")
+    operations._git(repository, "checkout", "-b", "feature/review")
+    (repository / "hello.txt").write_text("PR change\n")
+    operations._git(repository, "commit", "-am", "PR", "--no-gpg-sign")
+    head = operations._git(repository, "rev-parse", "HEAD")
+    operations._git(repository, "update-ref", "refs/pull/303/head", head)
+    operations._git(repository, "checkout", "main")
+    (repository / "new-base.txt").write_text("later target change\n")
+    operations._git(repository, "add", ".")
+    operations._git(repository, "commit", "-m", "target", "--no-gpg-sign")
+    metadata = {
+        "url": "https://github.com/org/repo/pull/303",
+        "headRefName": "feature/review",
+        "headRefOid": head,
+        "baseRefName": "main",
+        "isCrossRepository": False,
+        "baseRefOid": operations._git(repository, "rev-parse", "HEAD"),
+    }
+    run = operations._run
+    setup = []
+
+    def local_run(workspace, *args, **kwargs):
+        if args[0] == "gh":
+            assert args[1:3] == ("pr", "view")
+            return json.dumps(metadata)
+        return run(workspace, *args, **kwargs)
+
+    monkeypatch.setattr(operations, "_run", local_run)
+    monkeypatch.setattr(operations, "_setup_worktree", lambda path, definition: setup.append(path))
+    return checkout, metadata, baseline, setup
+
+
+def test_review_checkout_fetches_pr_reuses_worktree_and_keeps_base_untouched(review_pr):
+    repository, metadata, baseline, setup = review_pr
+    (repository / "unrelated.txt").write_text("Preserve local work\n")
+    before = _snapshot(repository)
+    result = json.loads(operations.workflow_review_checkout(str(repository), metadata["url"]))
+    checkout = Path(result["repository"])
+    assert checkout != repository
+    assert result["baseline"] == baseline
+    assert result["base"] == "main"
+    assert result["head"] == metadata["headRefOid"]
+    assert result["branch"] == "feature/review"
+    assert setup == [checkout]
+    assert (checkout / "hello.txt").read_text() == "PR change\n"
+    assert _snapshot(repository) == before
+    assert (
+        json.loads(operations.workflow_review_checkout(str(repository), metadata["url"])) == result
+    )
+    (checkout / "hello.txt").write_text("unrelated local change\n")
+    with pytest.raises(ValueError, match="dirty"):
+        operations.workflow_review_checkout(str(repository), metadata["url"])
+    assert (checkout / "hello.txt").read_text() == "unrelated local change\n"
+
+
+def test_review_checkout_rejects_wrong_repo_and_stale_branch(review_pr):
+    repository, metadata, _, setup = review_pr
+    with pytest.raises(ValueError, match="repository"):
+        operations.workflow_review_checkout(
+            str(repository), "https://github.com/other/repo/pull/303"
+        )
+    assert not setup
+    operations._git(repository, "branch", "feature/review", "HEAD")
+    with pytest.raises(ValueError, match="differs"):
+        operations.workflow_review_checkout(str(repository), metadata["url"])
+    assert not setup
+
+
+def test_review_checkout_fork_uses_separate_branch_and_preserves_dangling_path(review_pr):
+    repository, metadata, _, _ = review_pr
+    metadata["isCrossRepository"] = True
+    path = repository.parent / f"{repository.name}-pr-303"
+    path.symlink_to(repository.parent / "missing", target_is_directory=True)
+    with pytest.raises(ValueError, match="Unregistered"):
+        operations.workflow_review_checkout(str(repository), metadata["url"])
+    assert path.is_symlink()
+    path.unlink()
+    result = json.loads(operations.workflow_review_checkout(str(repository), metadata["url"]))
+    assert result["branch"] == "workflow/review-pr-303"
+
+
+def test_review_checkout_rejects_refs_changed_during_fetch(review_pr):
+    repository, metadata, _, setup = review_pr
+    metadata["headRefOid"] = "f" * 40
+    with pytest.raises(ValueError, match="changed during fetch"):
+        operations.workflow_review_checkout(str(repository), metadata["url"])
+    assert not setup
+    assert len(operations._worktrees(repository)) == 1
