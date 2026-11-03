@@ -12,9 +12,15 @@ from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 from omnigent.entities import Conversation
+from omnigent.policies.builtins._shell import (
+    MAX_SHELL_NESTING,
+    real_invocation_tokens,
+    split_command_segments,
+    unwrap_shell_command,
+)
 from omnigent.policies.builtins.github import github_policy
 from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
-from omnigent.policies.builtins.working_dir import block_working_dir_changes
+from omnigent.policies.builtins.working_dir import _GIT_VALUE_OPTS, block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
 from omnigent.stores import ConversationStore
 from omnigent.workflows import comparison
@@ -410,6 +416,41 @@ def _journal_permission(event: PolicyEvent, repository: str | None) -> PolicyRes
     return {"result": "ALLOW", "data": {**args, "repository": repository}}
 
 
+def _worker_git_mutation(command: str, depth: int = 0) -> bool:
+    """Classify Git's subcommand, not words in paths or search expressions."""
+    if depth > MAX_SHELL_NESTING:
+        return True
+    pattern = r"\bgit\b[^\n;]*\b(commit|merge(?!-base\b)|rebase|cherry-pick|push|reset)\b"
+    segments = split_command_segments(command)
+    if len(segments) > 1:
+        return any(_worker_git_mutation(segment, depth + 1) for segment in segments)
+    try:
+        tokens = real_invocation_tokens(shlex.split(command))
+    except ValueError:
+        return bool(re.search(pattern, command))
+    if not tokens:
+        return False
+    inner = unwrap_shell_command(tokens)
+    if inner is not None:
+        return _worker_git_mutation(inner, depth + 1)
+    if Path(tokens[0]).name != "git":
+        # Keep the conservative guard for compound syntax and opaque programs.
+        return bool(re.search(pattern, command))
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in _GIT_VALUE_OPTS:
+            i += 2
+        elif token.startswith("-"):
+            i += 1
+        else:
+            # Config options can execute Git through an alias or pager.
+            return token in {"commit", "merge", "rebase", "cherry-pick", "push", "reset"} or bool(
+                re.search(pattern, " ".join(tokens[1:i]))
+            )
+    return False
+
+
 def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyResponse:
     """Grant tools only to the recorded worker for the outstanding stage."""
     from omnigent.runtime import get_conversation_store
@@ -523,10 +564,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         if not isinstance(cwd, str) and not explicit_cd:
             return _deny("Shell calls must explicitly set the candidate workdir")
     command = str(args.get("command", args.get("cmd", "")))
-    if re.search(
-        r"\bgit\b[^\n;]*\b(commit|merge(?!-base\b)|rebase|cherry-pick|push|reset)\b|\b(oc|kubectl)\b",
-        command,
-    ):
+    if _worker_git_mutation(command) or re.search(r"\b(oc|kubectl)\b", command):
         return _deny("Workers cannot publish or rewrite Git history")
     policy_event: PolicyEvent = event
     if "command" in args or "cmd" in args:

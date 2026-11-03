@@ -74,8 +74,12 @@ def test_sibling_creation_through_native_hook_preserves_state_after_restart(repo
 
             command = "git worktree add -b adjacent ../adjacent HEAD"
             assert permission(command) == "POLICY_ACTION_ALLOW"
+            read = "git --no-pager show HEAD:deploy/k8s/tests/push-render.sh"
+            assert permission(read) == "POLICY_ACTION_ALLOW"
             stack.restart_server()
             assert permission(command) == "POLICY_ACTION_ALLOW"
+            assert permission(read) == "POLICY_ACTION_ALLOW"
+            assert permission(read + " && git commit -am change") == "POLICY_ACTION_DENY"
             subprocess.run(shlex.split(command), cwd=repository, check=True, capture_output=True)
             assert (repository.parent / "adjacent/hello.txt").read_text() == "hello\n"
             assert permission(command) == "POLICY_ACTION_DENY"
@@ -87,4 +91,5 @@ def test_sibling_creation_through_native_hook_preserves_state_after_restart(repo
             store.set_session_state(sid, {STATE_KEY: paused})
             stack.restart_server()
             assert permission("git worktree add ../another") == "POLICY_ACTION_DENY"
+            assert permission(read) == "POLICY_ACTION_DENY"
             assert store.get_conversation(sid).session_state[STATE_KEY] == paused
