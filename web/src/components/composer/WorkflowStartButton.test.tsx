@@ -57,3 +57,30 @@ it("does not offer a start action without a saved draft", async () => {
   expect(screen.queryByRole("button", { name: "Start workflow" })).toBeNull();
   client.clear();
 });
+
+it("requires an explicit answer and resets it when the question changes", async () => {
+  const question = { token: "first", text: "Which Registry source?" };
+  vi.mocked(authenticatedFetch).mockImplementation(
+    async () => new Response(JSON.stringify({ draft: null, question })),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const send = vi.fn();
+  render(
+    <QueryClientProvider client={client}>
+      <WorkflowStartButton sessionId="question-session" disabled={false} onStart={send} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Answer" }));
+  expect(screen.getByRole("button", { name: "Submit answer" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Your workflow answer"), {
+    target: { value: "Use Registry" },
+  });
+  expect(send).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
+  expect(send).toHaveBeenCalledWith("/workflow answer-question first Use Registry");
+  question.token = "second";
+  await client.invalidateQueries({ queryKey: ["workflow-draft", "question-session"] });
+  fireEvent.click(await screen.findByRole("button", { name: "Answer" }));
+  expect(screen.getByLabelText("Your workflow answer")).toHaveValue("");
+  client.clear();
+});

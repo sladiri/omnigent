@@ -979,3 +979,139 @@ def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_p
                         )
                         result.raise_for_status()
                         assert store.get_conversation(sid).session_state == state
+
+
+@pytest.mark.timeout(120)
+def test_native_question_recovery_and_answer_survive_restart(tmp_path):
+    from omnigent.cli import _bundle
+    from omnigent.entities import MessageData, NewConversationItem
+    from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+    from omnigent.workflows.controller import STATE_KEY
+    from tests._helpers.server_runner import server_runner
+    from tests._helpers.session import post_session_bundle
+
+    bundle = _mock_bundle(tmp_path / "question-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    with server_runner(
+        tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2]
+    ) as stack:
+        with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
+            response = post_session_bundle(
+                client.post,
+                "/v1/sessions",
+                _bundle(bundle),
+                headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+            )
+            response.raise_for_status()
+            sid = response.json()["session_id"]
+            store = SqlAlchemyConversationStore(stack.database_uri)
+            child = store.create_conversation(
+                parent_conversation_id=sid,
+                title="worker:one/implement/1",
+                labels={
+                    "omnigent.wrapper": "codex-native-ui",
+                    "omnigent.subagent.dispatch_id": "saved-work",
+                },
+            )
+            store.set_session_live_status(child.id, "idle")
+            report = {
+                "stage": "implement",
+                "outcome": "NEEDS_INPUT",
+                "evidence": "Inspected source",
+                "question": "Use Registry directly?",
+            }
+            store.append(
+                child.id,
+                [
+                    NewConversationItem(
+                        type="message",
+                        response_id="native-turn",
+                        data=MessageData(
+                            role="assistant",
+                            agent="worker",
+                            content=[{"type": "output_text", "text": json.dumps(report)}],
+                        ),
+                    )
+                ],
+            )
+            store.set_session_state(
+                sid,
+                {
+                    STATE_KEY: {
+                        "status": "running",
+                        "current": "one/implement",
+                        "attempt": 1,
+                        "definition": {"run_id": sid, "publish": False},
+                        "pending": {
+                            "stage": "one/implement",
+                            "title": "one/implement/1",
+                            "child_id": child.id,
+                        },
+                        "completed": {},
+                        "candidates": [{"id": "one", "workspace": str(tmp_path)}],
+                    }
+                },
+            )
+
+            def evaluate(phase, data, request_data=None):
+                r = client.post(
+                    f"/v1/sessions/{sid}/policies/evaluate",
+                    json={
+                        "event": {
+                            "type": phase,
+                            "target": "",
+                            "data": data,
+                            "context": {},
+                            "request_data": request_data,
+                        }
+                    },
+                )
+                r.raise_for_status()
+                return r.json()
+
+            stack.restart_server()
+            result = evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})
+            assert "data" in result, result
+            assert json.loads(result["data"])["status"] == "waiting-user"
+            preview = client.get(f"/v1/sessions/{sid}/workflow-draft").json()
+            assert preview["question"]["text"] == report["question"]
+            stack.restart_server()
+            assert client.get(f"/v1/sessions/{sid}/workflow-draft").json() == preview
+            token = preview["question"]["token"]
+            assert (
+                evaluate("PHASE_REQUEST", {"text": "Unrelated"})["result"] == "POLICY_ACTION_ALLOW"
+            )
+            assert (
+                evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )
+            assert (
+                evaluate("PHASE_REQUEST", {"text": "/workflow answer-question stale Yes"})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )
+            assert (
+                evaluate(
+                    "PHASE_REQUEST", {"text": f"/workflow answer-question {token} Use Registry"}
+                )["result"]
+                == "POLICY_ACTION_ALLOW"
+            )
+            stack.restart_server()
+            state = json.loads(
+                evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})[
+                    "data"
+                ]
+            )
+            assert state["status"] == "snapshot"
+            assert state["answer"] == "Use Registry"
+            assert state["completed"] == {}
+            assert state["definition"]["publish"] is False
+            assert (
+                evaluate("PHASE_TOOL_CALL", {"name": "workflow_publish", "arguments": {}})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )

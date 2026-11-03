@@ -49,3 +49,33 @@ def test_start_workflow_submits_current_draft_without_json(page, chat_session_co
     assert len(chat.event_posts) == 1
     assert "/workflow start-draft validated-second" in json.dumps(chat.event_posts[0]["body"])
     assert "/workflow start {" not in json.dumps(chat.event_posts[0]["body"])
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_answer_workflow_submits_explicit_decision(page, chat_session_contract, width):
+    chat = chat_session_contract
+    chat.agent_id = "workflow-controller"
+    question = {"token": "question-1", "text": "May I use Registry directly?"}
+    chat.contract.json(
+        f"/v1/sessions/{chat.session_id}/workflow-draft", {"draft": None, "question": question}
+    )
+    open_live(page, chat, {"width": width, "height": 1000})
+    page.get_by_role("button", name="Answer", exact=True).click()
+    expect(page.get_by_text(question["text"], exact=True)).to_be_visible()
+    submit = page.get_by_role("button", name="Submit answer", exact=True)
+    expect(submit).to_be_disabled()
+    page.get_by_label("Your workflow answer").fill(
+        "Use Registry. Document grants; do not apply them."
+    )
+    assert not chat.event_posts
+    submit.scroll_into_view_if_needed()
+    box = submit.bounding_box()
+    assert box["x"] >= 0 and box["x"] + box["width"] <= width
+    page.screenshot(path=f"/tmp/workflow-answer-{width}.png")
+    submit.click()
+    page.wait_for_timeout(300)
+    assert len(chat.event_posts) == 1
+    assert (
+        "/workflow answer-question question-1 Use Registry. Document grants; do not apply them."
+        in json.dumps(chat.event_posts[0]["body"])
+    )

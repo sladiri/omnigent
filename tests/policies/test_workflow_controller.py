@@ -890,7 +890,7 @@ async def test_malformed_stage_preserves_worker_question_without_advancing(codin
     await begin(coding)
     dispatch = await coding.dispatch()
     report = {
-        "stage": "implement",
+        "stage": "wrong-stage",
         "outcome": "NEEDS_INPUT",
         "evidence": "The current cache cannot establish deletion.",
         "question": "May I use a read-only Registry batch query?",
@@ -925,3 +925,132 @@ async def test_malformed_stage_preserves_worker_question_without_advancing(codin
     retry = await coding.dispatch()
     assert retry["title"].startswith("one/implement/")
     assert report["question"] in coding.state["incomplete"]["one/implement"]["question"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["workflow_reconcile", "workflow_status"])
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
+async def test_recover_native_question_and_bind_answer_across_restart(
+    coding, monkeypatch, source, workflow
+):
+    from omnigent.entities import MessageData, NewConversationItem
+    from omnigent.workflows.controller import draft_preview
+
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding, workflow=workflow)
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"],
+        parent_conversation_id=coding.session_id,
+        labels={
+            "omnigent.subagent.dispatch_id": "saved-work",
+            "omnigent.wrapper": "codex-native-ui",
+        },
+    )
+    report = {
+        "stage": dispatch["title"].split("/")[-2],
+        "outcome": "NEEDS_INPUT",
+        "evidence": "Inspected Registry integration",
+        "question": "May I use Registry directly?",
+    }
+    coding.store.append(
+        child.id,
+        [
+            NewConversationItem(
+                type="message",
+                response_id="native-turn",
+                data=MessageData(
+                    role="assistant",
+                    agent="worker",
+                    content=[{"type": "output_text", "text": json.dumps(report)}],
+                ),
+            )
+        ],
+    )
+    coding.store.set_session_live_status(child.id, "running")
+    await coding.evaluate(output(source, {}))
+    assert coding.state["status"] == "running"
+    coding.store.set_session_live_status(child.id, "idle")
+    await coding.evaluate(output(source, {}))
+    assert coding.state["status"] == "waiting-user"
+    assert report["question"] in coding.state["question"]
+    assert coding.state["pending"] is None
+    assert coding.state["completed"] == {}
+    assert coding.state["last_result"]["work_id"] == "saved-work"
+    token = draft_preview({STATE_KEY: coding.state})["question"]["token"]
+    # Each evaluate rebuilds the engine from SQLite, including duplicate recovery.
+    await coding.evaluate(output(source, {}))
+    await coding.evaluate(_request("Unrelated message"))
+    assert coding.state["status"] == "waiting-user"
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    for command in ["/workflow answer-question stale Yes", f"/workflow answer-question {token} "]:
+        assert (await coding.evaluate(_request(command))).action == PolicyAction.DENY
+    assert (
+        await coding.evaluate(_request(f"/workflow answer-question {token} Use Registry"))
+    ).action == PolicyAction.ALLOW
+    assert coding.state["answer"] == "Use Registry"
+    assert coding.state["status"] == "snapshot"
+    assert (
+        await coding.evaluate(_request(f"/workflow answer-question {token} Duplicate"))
+    ).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "variant", ["interrupted", "success", "wrong-stage", "no-dispatch", "newer-input"]
+)
+async def test_recovery_does_not_infer_question_from_untrusted_or_incomplete_history(
+    coding, monkeypatch, variant
+):
+    from omnigent.entities import MessageData, NewConversationItem
+
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
+    await begin(coding)
+    dispatch = await coding.dispatch()
+    labels = {"omnigent.wrapper": "codex-native-ui"}
+    if variant != "no-dispatch":
+        labels["omnigent.subagent.dispatch_id"] = "saved-work"
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"],
+        parent_conversation_id=coding.session_id,
+        labels=labels,
+    )
+    coding.store.set_session_live_status(child.id, "idle")
+    report = {
+        "stage": "wrong" if variant == "wrong-stage" else "implement",
+        "outcome": "COMPLETE" if variant == "success" else "NEEDS_INPUT",
+        "evidence": "Inspected",
+        "question": "Which source?",
+    }
+    coding.store.append(
+        child.id,
+        [
+            NewConversationItem(
+                type="message",
+                response_id="native-turn",
+                data=MessageData(
+                    role="assistant",
+                    agent="worker",
+                    interrupted=variant == "interrupted",
+                    content=[{"type": "output_text", "text": json.dumps(report)}],
+                ),
+            )
+        ],
+    )
+    if variant == "newer-input":
+        coding.store.append(
+            child.id,
+            [
+                NewConversationItem(
+                    type="message",
+                    response_id="next-turn",
+                    data=MessageData(
+                        role="user", content=[{"type": "input_text", "text": "Continue"}]
+                    ),
+                )
+            ],
+        )
+    await coding.evaluate(output("workflow_reconcile", {}))
+    assert coding.state["status"] == "running"
+    assert coding.state["pending"]
+    assert coding.state["completed"] == {}

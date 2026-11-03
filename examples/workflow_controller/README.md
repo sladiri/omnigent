@@ -186,12 +186,18 @@ and final review stops for findings, conflicts, questions, or blockers. Clean
 reviews continue. The parallel Standards and Spec reviews collect both reports
 before asking; no fix or later stage starts while a decision is pending.
 
-The coordinator presents the findings and questions. Reply with
+The coordinator presents the findings and questions. In the web UI, click **Answer**,
+enter your decision, then click **Submit answer**. Nothing resumes until you submit.
+An answer to a replaced question is refused. Text clients can reply with
 `/workflow answer <decision and instructions>`, for example:
 `/workflow answer Keep the existing API and fix the missing validation`.
 Completed reviews then proceed to their fix stage. Incomplete or blocked reviews
 run again with your answer. Review decisions and evidence survive restart.
 A materially different Compare design still requires new proposal approval.
+
+After a restart, `workflow_status` and `workflow_reconcile` can recover a saved
+`NEEDS_INPUT` report from the assigned idle native worker. Recovery opens the user
+decision gate; it never treats idle alone as completion or advances successful work.
 
 Other workers also wait when they need a decision. Unrelated messages, runtime
 wakes, and goal continuations are not answers. `/workflow retry` cannot bypass a

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { authenticatedFetch } from "@/lib/identity";
 import { COMPOSER_CONTENT_INSET_CLASS } from "@/components/composer/ChatComposer";
@@ -23,7 +25,10 @@ export function WorkflowStartButton({
   disabled: boolean;
   onStart: (command: string) => void;
 }) {
-  const { data, isError } = useQuery<{ draft: PreparedDraft | null }>({
+  const { data, isError } = useQuery<{
+    draft: PreparedDraft | null;
+    question?: { token: string; text: string } | null;
+  }>({
     queryKey: ["workflow-draft", sessionId],
     queryFn: async () => {
       const response = await authenticatedFetch(
@@ -37,8 +42,17 @@ export function WorkflowStartButton({
   if (isError)
     return (
       <p role="status" className={COMPOSER_CONTENT_INSET_CLASS}>
-        Could not load prepared workflow. Reconnecting…
+        Could not load workflow actions. Reconnecting…
       </p>
+    );
+  if (data?.question)
+    return (
+      <WorkflowAnswer
+        key={`${sessionId}:${data.question.token}`}
+        question={data.question}
+        disabled={disabled}
+        onAnswer={onStart}
+      />
     );
   const draft = data?.draft;
   if (!draft) return null;
@@ -65,6 +79,51 @@ export function WorkflowStartButton({
       >
         Start workflow
       </Button>
+    </div>
+  );
+}
+
+function WorkflowAnswer({
+  question,
+  disabled,
+  onAnswer,
+}: {
+  question: { token: string; text: string };
+  disabled: boolean;
+  onAnswer: (command: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [answer, setAnswer] = useState("");
+  return (
+    <div className={`${COMPOSER_CONTENT_INSET_CLASS} space-y-2 pb-2`}>
+      <p className="whitespace-pre-wrap text-sm">{question.text}</p>
+      {open ? (
+        <>
+          <label className="text-sm">
+            Your workflow answer
+            <Textarea
+              value={answer}
+              onChange={(event) => setAnswer(event.target.value)}
+              disabled={disabled}
+              autoFocus
+            />
+          </label>
+          <Button
+            type="button"
+            disabled={disabled || !answer.trim()}
+            onClick={() => onAnswer(`/workflow answer-question ${question.token} ${answer.trim()}`)}
+          >
+            Submit answer
+          </Button>
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+        </>
+      ) : (
+        <Button type="button" disabled={disabled} onClick={() => setOpen(true)}>
+          Answer
+        </Button>
+      )}
     </div>
   );
 }
