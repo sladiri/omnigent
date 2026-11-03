@@ -24,6 +24,8 @@ and steers messages while the agent is busy.
 - `workflow-prompts`: implement, compare, and review appear only for workflow-controller
   in a separate row in both composers, with visible names and the selected controller
   identified. Each inserts the workflow prompt before the draft without sending.
+- `workflow-start`: existing controller sessions show a saved draft with a Start workflow
+  action. Review its details before approval; editing the message disables Start.
 - `effort-picker`: reasoning effort for harnesses that support it (Codex, Claude,
   Pi). States: available, unavailable placeholder, max/ultra levels, refused
   change (the pill keeps the applied level).
@@ -187,6 +189,13 @@ Tests under `tests/browser_ui/` stub every backend call and need no instance:
   server agent keeps the dialog open with the server's reason.
 - **`mobile-labels`, new-session composer:**
   `tests/e2e_ui/mobile/test_composer_model_label_stop_overlap.py::test_new_session_composer_collapses_labels_to_icons_on_mobile`
+
+- **`workflow-start`, existing session (desktop and mobile):**
+  `tests/browser_ui/chat/test_workflow_start.py` checks draft details, edit protection,
+  reload, and token submission in the built SPA with a mocked backend. The isolated
+  server check `tests/e2e/test_workflow_controller_e2e.py::test_prepared_draft_endpoint_and_approval_survive_restart`
+  verifies durable drafts, stale approvals, and policy gates. New-session composers
+  have no saved draft; send the task first, then approve in the created session.
 
 ## Gotchas
 

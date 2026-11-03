@@ -923,3 +923,70 @@ async def test_idle_controller_drafts_valid_start_without_advancing(coding, work
     assert (await coding.evaluate(_request(draft["command"]))).action == PolicyAction.ALLOW
     assert coding.state["definition"]["publish"] is False
     assert (await coding.evaluate(call)).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separator", ["_", "__"])
+async def test_prepared_draft_requires_current_explicit_user_selection(coding, separator):
+    from omnigent.workflows.controller import draft_start_message
+
+    args = {
+        "workflow": "implement-review-fix",
+        "repository": "/tmp/repo",
+        "task": "Task",
+        "baseline": "main",
+        "base": "main",
+        "branch": "feature/lcs-1670",
+    }
+    await coding.evaluate(
+        _request("Prepare the start message for `implement-review-fix` using the task below.")
+    )
+    for tool in (
+        f"mcp__codex_apps__linear{separator}get_issue",
+        f"mcp__codex_apps__linear{separator}get_agent_context",
+    ):
+        request = hook_payload_to_evaluation_request(
+            "PreToolUse", {"tool_name": tool, "tool_input": {"id": "LCS-1670"}}
+        )["event"]
+        assert (
+            await coding.evaluate(
+                _build_evaluation_context(Phase.TOOL_CALL, request["data"], request)
+            )
+        ).action == PolicyAction.ALLOW
+    assert (
+        await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}save_issue"))
+    ).action == PolicyAction.DENY
+    assert (
+        await coding.evaluate(_request("/workflow start-draft missing"))
+    ).action == PolicyAction.DENY
+    draft = json.loads(draft_start_message(**args))
+    definition = json.loads(draft["command"].removeprefix("/workflow start "))
+    assert definition["candidates"][0]["branch"] == args["branch"]
+    await coding.evaluate(output("workflow_draft", draft))
+    token = coding.state["draft"]["token"]
+    assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("Change the task"))
+    assert "draft" not in coding.state
+    assert (
+        await coding.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.DENY
+    await coding.evaluate(output("workflow_draft", draft))
+    token = coding.state["draft"]["token"]
+    await coding.evaluate(_request(""))
+    assert coding.state["draft"]["token"] == token
+    # The fixture reconstructs the policy from SQLite on each call.
+    native = _request("/workflow start-draft " + token)
+    native = EvaluationContext(phase=Phase.REQUEST, content=native.content, harness="codex-native")
+    await coding.evaluate(native)
+    assert coding.state["status"] == "idle"
+    assert (
+        await coding.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.ALLOW
+    assert coding.state["definition"]["candidates"][0]["branch"] == args["branch"]
+    assert coding.state["definition"]["publish"] is False
+    assert (
+        await coding.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.DENY
+    assert (
+        await coding.evaluate(_call(f"mcp__codex_apps__linear{separator}get_issue"))
+    ).action == PolicyAction.DENY

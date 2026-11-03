@@ -47,6 +47,7 @@ import {
 } from "@/components/composer/ChatComposer";
 import { ComposerMentionChips } from "@/components/composer/ComposerMentionChips";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { WorkflowStartButton } from "@/components/composer/WorkflowStartButton";
 import { WorkflowPromptButtons } from "@/components/composer/WorkflowPromptButtons";
 import { BackgroundTaskIndicator } from "@/components/composer/BackgroundTaskIndicator";
 import { SubagentTaskIndicator } from "@/components/composer/SubagentTaskIndicator";
@@ -3812,26 +3813,46 @@ function ComposerImpl(
         }}
         slots={{
           beforeActions: (
-            <WorkflowPromptButtons
-              agentName={
-                subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
-              }
-              disabled={
-                disabled ||
-                isReadOnly ||
-                hasPendingElicitation ||
-                composerLockedByBtw ||
-                savingSubmitEffort
-              }
-              draft={draft.quotes[0]?.before ?? draft.text}
-              onChange={(text) => {
-                editText(draft.quotes[0]?.id ?? null, text);
-                dirtyRef.current = true;
-                resetCursor();
-                if (commandError !== null) setCommandError(null);
-                textareaRef.current?.focus();
-              }}
-            />
+            <>
+              <WorkflowPromptButtons
+                agentName={
+                  subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
+                }
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                draft={draft.quotes[0]?.before ?? draft.text}
+                onChange={(text) => {
+                  editText(draft.quotes[0]?.id ?? null, text);
+                  dirtyRef.current = true;
+                  resetCursor();
+                  if (commandError !== null) setCommandError(null);
+                  textareaRef.current?.focus();
+                }}
+              />
+              {composerSessionId &&
+                (subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name) ===
+                  "workflow-controller" && (
+                  <WorkflowStartButton
+                    sessionId={composerSessionId}
+                    disabled={
+                      disabled ||
+                      isReadOnly ||
+                      isWorking ||
+                      hasDraft ||
+                      hasPendingElicitation ||
+                      composerLockedByBtw ||
+                      savingSubmitEffort ||
+                      unreachable
+                    }
+                    onStart={onSend}
+                  />
+                )}
+            </>
           ),
           inputPrefix:
             draft.quotes.length > 0 ? (

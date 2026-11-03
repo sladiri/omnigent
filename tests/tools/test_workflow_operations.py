@@ -457,3 +457,28 @@ def test_desktop_environment_reads_session_and_removes_terminal_pinentry(
     assert environment["XAUTHORITY"] == "/tmp/rotating-auth"
     assert "GPG_TTY" not in environment
     assert os.environ["GPG_TTY"] == "/dev/pts/test"
+
+
+def test_draft_branch_reaches_real_worktree(repository):
+    from omnigent.workflows.controller import draft_start_message
+
+    draft = json.loads(
+        draft_start_message(
+            "implement-review-fix",
+            str(repository),
+            "Task",
+            "main",
+            "main",
+            branch="feature/lcs-1670",
+        )
+    )
+    definition = json.loads(draft["command"].removeprefix("/workflow start "))
+    definition.update(run_id="branch-draft", worktree_setup=False)
+    prepared = json.loads(operations.workflow_prepare(definition))
+    candidate = prepared["candidates"][0]
+    assert candidate["branch"] == "feature/lcs-1670"
+    assert (
+        operations._git(Path(candidate["workspace"]), "branch", "--show-current")
+        == "feature/lcs-1670"
+    )
+    assert operations._git(repository, "branch", "--show-current") == "main"

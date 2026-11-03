@@ -1,3 +1,4 @@
+vi.mock("@/components/composer/WorkflowStartButton", () => ({ WorkflowStartButton: () => null }));
 import { create } from "zustand";
 import type { SkillSummary, SkillsStatus } from "@/lib/types";
 

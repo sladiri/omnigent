@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import shlex
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeAlias, cast
@@ -54,6 +55,13 @@ READ_TOOLS = {
     "sys_session_list",
     "sys_session_get_info",
     "sys_session_get_history",
+}
+PREPARATION_READ_TOOLS = {
+    # Native hooks retain the separator that JavaScript tool aliases flatten.
+    "mcp__codex_apps__linear__get_issue",
+    "mcp__codex_apps__linear__get_agent_context",
+    "mcp__codex_apps__linear_get_issue",
+    "mcp__codex_apps__linear_get_agent_context",
 }
 _REVIEW = {stage for stage in STAGES if stage.startswith(("review-", "verify-", "final-"))}
 
@@ -189,10 +197,18 @@ def _definition(raw: str, conversation_id: str) -> Json:
 
 
 def draft_start_message(
-    workflow: str, repository: str, task: str, baseline: str, base: str, publish: bool = False
+    workflow: str,
+    repository: str,
+    task: str,
+    baseline: str,
+    base: str,
+    publish: bool = False,
+    branch: str = "",
 ) -> str:
     """Validate a proposed start command without starting work or changing state."""
     try:
+        if branch and workflow == comparison.NAME:
+            raise ValueError("Compare requires separate branches for approved designs")
         definition = _definition(
             json.dumps(
                 {
@@ -208,6 +224,7 @@ def draft_start_message(
                         {
                             "id": "current" if workflow == "review-fix" else "implementation",
                             "task": task,
+                            **({"branch": branch} if branch else {}),
                         }
                     ],
                 }
@@ -218,6 +235,26 @@ def draft_start_message(
         return json.dumps({"valid": False, "error": str(exc)})
     definition.pop("run_id")
     return json.dumps({"valid": True, "command": "/workflow start " + json.dumps(definition)})
+
+
+def draft_preview(session_state: Json) -> Json:
+    """Return only the current draft details needed for user approval."""
+    state = session_state.get(STATE_KEY, {})
+    draft = state.get("draft") if state.get("status") == "idle" else None
+    if not draft:
+        return {"draft": None}
+    definition = draft["definition"]
+    return {
+        "draft": {
+            "token": draft["token"],
+            **{
+                key: definition[key]
+                for key in ("workflow", "repository", "task", "baseline", "base")
+            },
+            "branch": next((c.get("branch") for c in definition["candidates"]), None),
+            "publish": definition.get("publish", False),
+        }
+    }
 
 
 def _patch_paths(args: Json) -> list[str]:
@@ -670,7 +707,20 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             if not isinstance(event.get("data"), dict) or context.get("harness") is not None:
                 return {"result": "ALLOW"}
             text = request_user_text(event.get("data")).strip()
+            if text.startswith("/workflow start-draft "):
+                draft = state.get("draft")
+                if (
+                    state["status"] != "idle"
+                    or not draft
+                    or text != "/workflow start-draft " + draft["token"]
+                ):
+                    return _deny(
+                        "This draft is no longer current. Prepare and review a new draft."
+                    )
+                text = draft["command"]
             if state["status"] == "idle":
+                if text:
+                    state.pop("draft", None)
                 for name in WORKFLOWS:
                     if text.startswith(
                         f"Prepare the start message for `{name}` using the task below."
@@ -822,7 +872,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     )
             return _result(state)
         if phase == "tool_call":
+            if target in PREPARATION_READ_TOOLS and state["status"] == "idle":
+                return _result(state)
             if target == "workflow_draft" and state["status"] == "idle":
+                state.pop("draft", None)
                 data = event.get("data")
                 args = data.get("arguments", {}) if isinstance(data, dict) else {}
                 if not isinstance(args, dict):
@@ -937,6 +990,25 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     "workspace": _candidate(state)["workspace"],
                 },
             )
+        if target == "workflow_draft" and state["status"] == "idle":
+            state.pop("draft", None)
+            result = _decode(event)
+            if result.get("valid") is True:
+                command = result.get("command", "")
+                if not isinstance(command, str) or not command.startswith("/workflow start "):
+                    return _deny("Invalid draft command")
+                try:
+                    definition = _definition(command.removeprefix("/workflow start "), session_id)
+                except (ValueError, TypeError) as exc:
+                    return _deny(str(exc))
+                if state.get("requested_workflow") not in (None, definition["workflow"]):
+                    return _deny("Draft must use the workflow selected by the button")
+                state["draft"] = {
+                    "token": uuid.uuid4().hex,
+                    "command": command,
+                    "definition": definition,
+                }
+            return _result(state)
         if target == "workflow_status":
             status = dict(state)
             if state["status"] == "idle":
@@ -946,10 +1018,16 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     "baseline (revision preceding the changes), base (intended PR target branch). "
                     "Ask for missing details; do not invent branch names or review scope. "
                     "Default publish to false unless the user explicitly authorizes publication. "
-                    "Read linked context with sys_session_get_history. This controller supplies "
+                    "Read linked context with sys_session_get_history and Linear issues with "
+                    "mcp__codex_apps__linear_get_issue. Pass a requested implementation branch "
+                    "as workflow_draft branch, not only in task text. This controller supplies "
                     "the command format; do not load the separate omnigent-workflow skill or "
-                    "inspect files with shell commands. Show only a valid returned command and "
-                    "ask the user to send it to start. No implementation starts during drafting."
+                    "inspect files with shell commands. Summarize the validated task, repository, "
+                    "baseline, target branch, candidate branch and publication permission. "
+                    "Ask the user to click Start workflow; do not ask them to copy JSON. "
+                    "The button approves only the current saved draft. Text clients may send "
+                    "/workflow start-draft followed by the saved draft token. "
+                    "No implementation starts during drafting."
                 )
             return _result(state, data=json.dumps(status, sort_keys=True))
         if target == "workflow_present" and state["status"] in {

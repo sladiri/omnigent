@@ -28,9 +28,9 @@ answer. Answers and retries start a fresh worker for the same stage.
 
 In the Web UI, select the installed `workflow-controller` agent. Use `implement`
 for one approach, `compare` for alternatives, or `review` for an existing
-implementation. Then describe your task. The buttons prepare the workflow start
-message. Review and send that message to start
-the run. No separate controller process is needed.
+implementation. Describe your task and send it. Answer any missing-input questions,
+review the prepared details, then click **Start workflow**. No JSON copying or
+separate controller process is needed.
 
 For Review, select the project/worktree containing your implementation, click
 `review`, and enter, for example: "Review my current changes against main."
@@ -97,8 +97,14 @@ Each workflow button highlights its choice and replaces earlier workflow prefixe
 in the draft. Send prepares the request; it does not start implementation.
 The controller calls `workflow_status` for preparation guidance, asks for missing
 inputs, and uses `workflow_draft` to validate the command with the same parser
-used at startup. Drafting has no filesystem or worker side effects. Send the
-returned `/workflow start` command to start the run. The separate
+used at startup. The validated draft is saved across restarts without filesystem
+or worker side effects. The Web UI shows its task, repository, baseline, target
+branch, candidate branch, and publication permission. **Start workflow** submits
+`/workflow start-draft <token>` for that specific draft. New user instructions or
+a replacement draft invalidate the previous token. Linear issue and agent-context
+reads are allowed while idle; Linear writes remain blocked. Pass an exact requested
+branch through `workflow_draft`'s `branch` argument for Implement or Review; Compare
+assigns separate branches after design approval. The separate
 `omnigent-workflow` skill is not this controller's command reference.
 Each button records its choice so the prepared start message cannot silently
 switch workflows. Direct definitions with multiple candidates
