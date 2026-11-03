@@ -10,20 +10,78 @@ os_env:
   cwd: .
   sandbox:
     type: none
-    # File tools need explicit grants for skills installed outside the candidate.
+    # Exact skill directories only; add new installations here and reinstall the bundle.
     read_paths:
-      - ~/.agents/skills/ponytail
-      - ~/.agents/skills/ponytail-review
+      - ~/.agents/skills/adhd
+      - ~/.agents/skills/ask-matt
+      - ~/.agents/skills/caveman-commit
       - ~/.agents/skills/code-review
+      - ~/.agents/skills/codebase-design
       - ~/.agents/skills/compare-solutions
-      - ~/.codex/skills/ponytail
-      - ~/.codex/skills/ponytail-review
-      - ~/.codex/skills/code-review
-      - ~/.codex/skills/compare-solutions
-      - ~/.claude/skills/ponytail
-      - ~/.claude/skills/ponytail-review
+      - ~/.agents/skills/daily-summary
+      - ~/.agents/skills/diagnosing-bugs
+      - ~/.agents/skills/domain-modeling
+      - ~/.agents/skills/find-skills
+      - ~/.agents/skills/fix-omnigent-session-workspace
+      - ~/.agents/skills/graphify
+      - ~/.agents/skills/graphify-reuse-llm-session
+      - ~/.agents/skills/graphify-staged-build
+      - ~/.agents/skills/grill-me
+      - ~/.agents/skills/grill-with-docs
+      - ~/.agents/skills/grilling
+      - ~/.agents/skills/handoff
+      - ~/.agents/skills/implement
+      - ~/.agents/skills/improve-codebase-architecture
+      - ~/.agents/skills/omnigent-workflow
+      - ~/.agents/skills/ponytail
+      - ~/.agents/skills/ponytail-audit
+      - ~/.agents/skills/ponytail-debt
+      - ~/.agents/skills/ponytail-gain
+      - ~/.agents/skills/ponytail-help
+      - ~/.agents/skills/ponytail-review
+      - ~/.agents/skills/prototype
+      - ~/.agents/skills/research
+      - ~/.agents/skills/retro
+      - ~/.agents/skills/review-ai-tests
+      - ~/.agents/skills/review-linter-findings
+      - ~/.agents/skills/setup-local-agent-instructions
+      - ~/.agents/skills/setup-matt-pocock-skills
+      - ~/.agents/skills/show-me
+      - ~/.agents/skills/tdd
+      - ~/.agents/skills/teach
+      - ~/.agents/skills/to-questionnaire
+      - ~/.agents/skills/to-spec
+      - ~/.agents/skills/to-tickets
+      - ~/.agents/skills/triage
+      - ~/.agents/skills/trigo-docs-search
+      - ~/.agents/skills/trigo-docs-search-fast
+      - ~/.agents/skills/update-agent-skills
+      - ~/.agents/skills/wait-what
+      - ~/.agents/skills/wayfinder
+      - ~/.agents/skills/wizard
+      - ~/.agents/skills/writing-for-agents
       - ~/.claude/skills/code-review
       - ~/.claude/skills/compare-solutions
+      - ~/.claude/skills/ponytail
+      - ~/.claude/skills/ponytail-review
+      - ~/.claude/skills/skill-add-tests-before-plan-implementation
+      - ~/.claude/skills/skill-cleanup-feature-worktrees
+      - ~/.claude/skills/skill-create-agent-rules
+      - ~/.claude/skills/skill-implement-plan
+      - ~/.claude/skills/skill-review-my-pr
+      - ~/.claude/skills/skill-review-remote-pr
+      - ~/.claude/skills/skill-start-work-on-feature
+      - ~/.claude/skills/source-matrix-auditor
+      - ~/.claude/skills/source-matrix-builder
+      - ~/.codex/skills/.system/imagegen
+      - ~/.codex/skills/.system/openai-docs
+      - ~/.codex/skills/.system/review-agent
+      - ~/.codex/skills/.system/skill-creator
+      - ~/.codex/skills/.system/skill-installer
+      - ~/.codex/skills/code-review
+      - ~/.codex/skills/compare-solutions
+      - ~/.codex/skills/ponytail
+      - ~/.codex/skills/ponytail-review
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.
@@ -83,6 +141,8 @@ prompt: |
   code-review skill with independent Standards and Spec subreviews. Adapt HEAD-only
   instructions to the complete working-tree change; never commit to obtain a diff.
   C starts with the current code and requirements before reconciling earlier reports.
+  Use sys_os_read with the absolute installed path for skills and their references.
+  Access is limited to the explicit skill directories in this worker bundle.
   Load each named skill from its installed location. If a required skill or review
   capability is missing, return BLOCKED; never silently replace or skip it.
 

@@ -34,12 +34,15 @@ def test_review_reads_installed_skills_and_exposes_answer_after_restart(
         tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2]
     ) as stack:
         skills = []
-        for name in ("ponytail", "ponytail-review"):
+        for name in ("ponytail", "ponytail-review", "caveman-commit", "diagnosing-bugs", "tdd"):
             source = tmp_path / "skill-repository" / name
             source.mkdir(parents=True)
             skill = source / "SKILL.md"
             skill.write_text("Installed review instructions: " + name)
             skills.append(skill)
+            reference = source / "reference.md"
+            reference.write_text("Installed skill reference: " + name)
+            skills.append(reference)
             for home in (stack.server_home, stack.runner_home):
                 link = home / ".agents/skills" / name
                 link.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +87,11 @@ def test_review_reads_installed_skills_and_exposes_answer_after_restart(
                 [
                     _tool("workflow_stage", "brief"),
                     *[
-                        _tool("sys_os_read", skill.parent.name, {"path": str(skill)})
+                        _tool(
+                            "sys_os_read",
+                            skill.parent.name + "-" + skill.stem,
+                            {"path": str(skill)},
+                        )
                         for skill in skills
                     ],
                     {
@@ -92,7 +99,7 @@ def test_review_reads_installed_skills_and_exposes_answer_after_restart(
                             {
                                 "stage": "current/review-a",
                                 "outcome": "NEEDS_INPUT",
-                                "evidence": "Read both installed review skills.",
+                                "evidence": "Read allowlisted global skills and their references.",
                                 "question": question,
                             }
                         ),
@@ -124,7 +131,7 @@ def test_review_reads_installed_skills_and_exposes_answer_after_restart(
                     item["output"]
                     for item in child_items
                     if item.get("type") == "function_call_output"
-                    and item.get("call_id") == skill.parent.name
+                    and item.get("call_id") == skill.parent.name + "-" + skill.stem
                 )
                 assert skill.read_text() in output, output
                 assert "Error:" not in output

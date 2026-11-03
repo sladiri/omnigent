@@ -185,10 +185,16 @@ final-b-standards + final-b-spec
 ```
 
 A and C use the installed `ponytail` and `ponytail-review` skills. B uses the
-installed `code-review` skill. The worker grants file-tool reads to these skill
-directories and `compare-solutions` under `~/.agents/skills`, `~/.codex/skills`,
-and `~/.claude/skills`, including their resolved symlink targets and resource
-files. These grants do not permit writes or reads of unrelated sibling files.
+installed `code-review` skill. The worker's
+`agents/worker/config.yaml` lists each allowed global skill directory under
+`os_env.sandbox.read_paths`. It includes the current installations under
+`~/.agents/skills`, `~/.codex/skills` and `~/.claude/skills`, including individual
+Codex system skills. Read a skill and its references with `sys_os_read` using
+their absolute paths. Symlink targets are supported; paths escaping a granted
+skill and writes to skills remain blocked by the file tools.
+New installations are not added automatically. Add the exact skill directory
+to this list and reinstall the controller bundle before retrying the stage.
+Reading a skill does not authorize its actions or bypass workflow gates.
 The Standards and Spec subreviews must remain independent. The controller
 dispatches each pair in parallel to separate fresh worker sessions and waits
 for both reports. Missing required skills block the
