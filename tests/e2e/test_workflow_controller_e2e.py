@@ -724,3 +724,174 @@ def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
             assert (
                 state["designs"]["decisions"][-1]["command"] == "/workflow designs 1 select simple"
             )
+
+
+@pytest.mark.timeout(120)
+def test_prepared_draft_endpoint_and_approval_survive_restart(tmp_path: Path):
+    from omnigent.cli import _bundle
+    from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+    from omnigent.workflows.controller import draft_start_message
+    from tests._helpers.server_runner import server_runner
+    from tests._helpers.session import post_session_bundle
+
+    root = Path(__file__).resolve().parents[2]
+    bundle = _mock_bundle(tmp_path / "draft-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    with server_runner(tmp_path / "stack", server_cwd=root) as stack:
+        with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
+            created = post_session_bundle(
+                client.post,
+                "/v1/sessions",
+                _bundle(bundle),
+                headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+            )
+            created.raise_for_status()
+            sid = created.json()["session_id"]
+
+            def evaluate(phase, data, request_data=None):
+                response = client.post(
+                    f"/v1/sessions/{sid}/policies/evaluate",
+                    json={
+                        "event": {
+                            "type": phase,
+                            "target": "",
+                            "data": data,
+                            "context": {},
+                            "request_data": request_data,
+                        }
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+
+            def preview():
+                response = client.get(f"/v1/sessions/{sid}/workflow-draft")
+                response.raise_for_status()
+                return response.json()["draft"]
+
+            assert preview() is None
+            draft = draft_start_message(
+                "implement-review-fix",
+                str(tmp_path),
+                "Task",
+                "main",
+                "main",
+                branch="feature/lcs-1670",
+            )
+            evaluate("PHASE_TOOL_RESULT", {"result": draft}, {"name": "workflow_draft"})
+            saved = preview()
+            assert saved["branch"] == "feature/lcs-1670"
+            assert saved["publish"] is False
+            assert "command" not in saved
+            stack.restart_server()
+            assert preview() == saved
+            for name, verdict in (
+                ("mcp__codex_apps__linear__get_issue", "ALLOW"),
+                ("mcp__codex_apps__linear__get_agent_context", "ALLOW"),
+                ("mcp__codex_apps__linear__save_issue", "DENY"),
+                ("mcp__codex_apps__linear__create_issue", "DENY"),
+            ):
+                result = evaluate(
+                    "PHASE_TOOL_CALL", {"name": name, "arguments": {"id": "LCS-1670"}}
+                )
+                assert result["result"] == "POLICY_ACTION_" + verdict
+            denied = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
+            assert denied["result"] == "POLICY_ACTION_DENY"
+            evaluate("PHASE_REQUEST", {"text": "Change the task"})
+            assert preview() is None
+            stale = evaluate("PHASE_REQUEST", {"text": "/workflow start-draft " + saved["token"]})
+            assert stale["result"] == "POLICY_ACTION_DENY"
+            evaluate("PHASE_TOOL_RESULT", {"result": draft}, {"name": "workflow_draft"})
+            token = preview()["token"]
+            assert token != saved["token"]
+            accepted = evaluate("PHASE_REQUEST", {"text": "/workflow start-draft " + token})
+            assert accepted["result"] == "POLICY_ACTION_ALLOW"
+            assert preview() is None
+            allowed = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
+            assert allowed["data"]["definition"]["candidates"][0]["branch"] == "feature/lcs-1670"
+
+
+@pytest.mark.timeout(120)
+def test_bundled_draft_starts_requested_branch_only_after_user_approval(
+    http_client, live_runner_id, mock_llm_server_url, tmp_path
+):
+    from omnigent.workflows.operations import _git
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    _git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "baseline",
+    )
+    model = "draft-controller-" + uuid.uuid4().hex[:8]
+    bundle = _mock_bundle(tmp_path / "controller", model + "-worker", f"{mock_llm_server_url}/v1")
+    preparation = bundle / "tools/python/workflow_prepare.py"
+    preparation.write_text(
+        preparation.read_text().replace(
+            "return prepare(definition)", 'return prepare({**definition, "worktree_setup": False})'
+        )
+    )
+    agent = register_dir_agent_with_mock_llm(
+        http_client,
+        agent_dir=bundle,
+        name=model,
+        model=model,
+        mock_llm_base_url=f"{mock_llm_server_url}/v1",
+    )
+    sid = create_runner_bound_session(http_client, agent_name=agent, runner_id=live_runner_id)
+    args = {
+        "workflow": "implement-review-fix",
+        "repository": str(repository),
+        "task": "Task",
+        "baseline": "main",
+        "base": "main",
+        "branch": "feature/lcs-1670",
+        "publish": False,
+    }
+    configure_mock_llm(
+        mock_llm_server_url,
+        [
+            _tool("workflow_draft", "draft", args),
+            _tool("workflow_prepare", "too-early", {"definition": {}}),
+            {"text": "DRAFT_READY"},
+        ],
+        key=model,
+    )
+    send_user_message_to_session(
+        http_client,
+        session_id=sid,
+        content="Prepare the start message for `implement-review-fix` using the task below. Task",
+    )
+    items = _wait_for_text(http_client, sid, "DRAFT_READY")
+    assert "Denied by policy" in json.dumps(items)
+    preview = http_client.get(f"/v1/sessions/{sid}/workflow-draft").json()["draft"]
+    assert preview["branch"] == "feature/lcs-1670"
+    assert _git(repository, "branch", "--list", "feature/lcs-1670") == ""
+    configure_mock_llm(
+        mock_llm_server_url,
+        [
+            _tool("workflow_prepare", "prepare", {"definition": {}}),
+            _tool("workflow_status", "prepared"),
+            {"text": "BRANCH_READY"},
+        ],
+        key=model,
+    )
+    send_user_message_to_session(
+        http_client, session_id=sid, content="/workflow start-draft " + preview["token"]
+    )
+    items = _wait_for_text(http_client, sid, "BRANCH_READY")
+    state = _status(items, "prepared")
+    assert state["status"] == "snapshot"
+    candidate = state["candidates"][0]
+    assert _git(Path(candidate["workspace"]), "branch", "--show-current") == "feature/lcs-1670"
+    assert state["definition"]["publish"] is False
+    assert http_client.get(f"/v1/sessions/{sid}/workflow-draft").json()["draft"] is None

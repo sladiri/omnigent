@@ -58,6 +58,21 @@ def register_items_routes(
 ) -> None:
     """Register the items routes on router."""
 
+    @router.get("/sessions/{session_id}/workflow-draft")
+    async def get_workflow_draft(request: Request, session_id: str) -> dict[str, object]:
+        from omnigent.workflows.controller import draft_preview
+
+        user_id = _get_user_id(request, auth_provider)
+        access = await _require_access_and_level(
+            user_id, session_id, LEVEL_READ, permission_store, conversation_store
+        )
+        conv = access.conversation or await asyncio.to_thread(
+            conversation_store.get_conversation, session_id
+        )
+        if conv is None:
+            raise _session_not_found()
+        return draft_preview(conv.session_state or {})
+
     @router.get(
         "/sessions/{session_id}/items",
         response_model=None,
