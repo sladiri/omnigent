@@ -32,10 +32,15 @@ implementation. Describe your task and send it. Answer any missing-input questio
 review the prepared details, then click **Start workflow**. No JSON copying or
 separate controller process is needed.
 
-For Review, select the project/worktree containing your implementation, click
-`review`, and enter, for example: "Review my current changes against main."
-The controller reviews committed and uncommitted task changes in that worktree.
-If the scope or baseline is unclear, it asks before starting. Findings wait for
+For Review, select the local project, click `review`, and enter either a PR URL
+or, for example, "Review my current changes against main." For a PR, the controller
+reads its metadata and prepares a clean checkout with `workflow_review_checkout`.
+It reuses the PR branch's matching worktree or fetches and creates one. It derives
+the target branch and Git merge-base itself. Worktree preparation does not start
+review; click **Start workflow** after checking the draft. A Git fetch can wait
+for your hardware-key touch. Dirty or conflicting checkouts require your decision.
+For current local changes, the controller reviews committed and uncommitted task
+changes in that worktree. If the scope or baseline is unclear, it asks before starting. Findings wait for
 your decision before fixes. Approved fixes remain in the same worktree.
 Review defaults to no publication unless you request it.
 
@@ -101,7 +106,14 @@ used at startup. The validated draft is saved across restarts without filesystem
 or worker side effects. The Web UI shows its task, repository, baseline, target
 branch, candidate branch, and publication permission. **Start workflow** submits
 `/workflow start-draft <token>` for that specific draft. New user instructions or
-a replacement draft invalidate the previous token. Known Linear reads and ticket creation/editing are available to the controller in
+a replacement draft invalidate the previous token. GitHub source, PR and discussion
+reads are available to the controller in every state and to active workers.
+GitHub mutations remain blocked; publication still uses its separate gate.
+Only an idle Review controller may prepare a PR checkout. It requires an existing
+local repository whose origin matches the PR repository. Compare and Implement
+continue to create candidate worktrees through their approved preparation stage.
+
+Known Linear reads and ticket creation/editing are available to the controller in
 every state, including paused, complete and cancelled states. Availability does not
 authorize a ticket change: each change must follow an explicit user request or
 applicable repository instructions. Active implementation/fix workers have the same

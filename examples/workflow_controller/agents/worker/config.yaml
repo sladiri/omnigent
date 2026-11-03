@@ -31,6 +31,9 @@ prompt: |
   Never commit, push, open a PR, merge, deploy, or start another workflow stage.
   The controller's host operation owns publication after explicit selection.
 
+  GitHub tools are read-only while your stage is active. Read source and PR context
+  there when needed. Report any additional checkout needs to the controller.
+
   Known Linear reads are available only while your stage is active. Only IMPLEMENT
   and FIX may create or edit tickets, including milestone status updates, and only
   within the assigned task scope under explicit user requests or repository rules.

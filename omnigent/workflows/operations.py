@@ -127,6 +127,102 @@ def _worktrees(repository: Path) -> dict[str, Path]:
     return result
 
 
+def workflow_review_checkout(repository: str, pull_request_url: str) -> str:
+    """Find or create a clean PR checkout without starting review or changing GitHub."""
+    if not Path(repository).is_absolute():
+        raise ValueError("Repository must be an absolute path")
+    root = _workspace(repository)
+    match = re.fullmatch(
+        r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?",
+        pull_request_url,
+    )
+    if not match:
+        raise ValueError("Use a GitHub pull request URL")
+    repo, number = match.groups()
+    remote = _git(root, "config", "--get", "remote.origin.url")
+    origin = re.fullmatch(
+        r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?", remote
+    )
+    if not origin or origin[1].lower() != repo.lower():
+        raise ValueError("PR repository must match the local origin repository")
+    info = json.loads(
+        _run(
+            root,
+            "gh",
+            "pr",
+            "view",
+            number,
+            "--repo",
+            repo,
+            "--json",
+            "url,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository",
+        )
+    )
+    if info.get("url", "").rstrip("/").lower() != pull_request_url.rstrip("/").lower():
+        raise ValueError("GitHub returned a different pull request")
+    head, base = info["headRefOid"], info["baseRefOid"]
+    if not all(
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in (head, base)
+    ):
+        raise ValueError("GitHub returned invalid commit IDs")
+    branch = f"workflow/review-pr-{number}" if info["isCrossRepository"] else info["headRefName"]
+    _git(root, "check-ref-format", "--branch", branch)
+    _git(root, "check-ref-format", "refs/heads/" + branch)
+    _git(root, "check-ref-format", "refs/heads/" + info["baseRefName"])
+    common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    lock = common / "omnigent-workflows" / "review-checkout.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(lock), timeout=0):
+        try:
+            for sha in (head, base):
+                _git(root, "cat-file", "-e", sha + "^{commit}")
+        except subprocess.CalledProcessError:
+            prefix = f"refs/omnigent/review-pr-{number}"
+            _git(
+                root,
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "origin",
+                f"+refs/pull/{number}/head:{prefix}/head",
+                f"+refs/heads/{info['baseRefName']}:{prefix}/base",
+            )
+            if (
+                _git(root, "rev-parse", prefix + "/head") != head
+                or _git(root, "rev-parse", prefix + "/base") != base
+            ):
+                raise ValueError("PR refs changed during fetch; retry preparation") from None
+        baseline = _git(root, "merge-base", base, head)
+        worktrees = _worktrees(root)
+        workspace = worktrees.get(branch, root.parent / f"{root.name}-pr-{number}")
+        exists = bool(_git(root, "branch", "--list", branch))
+        if exists and _git(root, "rev-parse", "refs/heads/" + branch) != head:
+            raise ValueError(
+                "Local PR branch differs from GitHub; resolve ownership before review"
+            )
+        if branch in worktrees:
+            if _git(workspace, "status", "--porcelain"):
+                raise ValueError(f"PR worktree is dirty; clarify ownership: {workspace}")
+        else:
+            if workspace.exists() or workspace.is_symlink():
+                raise ValueError(f"Unregistered PR worktree path exists: {workspace}")
+            if exists:
+                _git(root, "worktree", "add", str(workspace), branch)
+            else:
+                _git(root, "worktree", "add", "-b", branch, str(workspace), head)
+        _setup_worktree(workspace, {})
+        return json.dumps(
+            {
+                "repository": str(workspace),
+                "branch": branch,
+                "baseline": baseline,
+                "base": info["baseRefName"],
+                "head": head,
+                "pull_request_url": info["url"],
+            }
+        )
+
+
 def workflow_prepare(definition: dict[str, Any]) -> str:
     """Prepare isolated implementations or bind Review to the existing worktree."""
     repository = _workspace(definition["repository"])

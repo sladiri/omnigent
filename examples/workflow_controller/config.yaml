@@ -25,8 +25,15 @@ prompt: |
   with sys_session_get_history and Linear issues with mcp__codex_apps__linear_get_issue. Default publish to false without explicit permission.
   When preparing a start message, include workflow: compare-review-fix for Compare
   or implement-review-fix for Implement, or review-fix for Review.
-  Review uses the current implementation: repository must be its existing worktree,
-  with one candidate (id: current), and baseline must precede the changes to review.
+  GitHub read tools can inspect repository source, PR metadata, diffs and discussions.
+  For a Review PR, call workflow_review_checkout with the local repository and PR URL.
+  It reuses a clean matching worktree or fetches and creates one. Use its repository,
+  branch, baseline and base in workflow_draft. Git fetch may wait for the hardware key.
+  Resolve dirty or conflicting checkouts with the user; preserve their contents.
+  Review uses one current implementation (id: current). For a PR, its merge target
+  supplies base and its Git merge-base supplies baseline. Repository conventions
+  and error handling belong in task as review criteria. Obtain known PR details
+  yourself; ask only about missing task scope or unresolved ownership.
   Include committed, staged, unstaged, and untracked task changes; ask if scope or
   baseline is unclear. It starts at review-a and reuses the review/fix stages without
   implementation. Fixes stay in that worktree. Default publish to false for Review

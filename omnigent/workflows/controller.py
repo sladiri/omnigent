@@ -118,6 +118,22 @@ def _linear_permission(target: str, *, may_edit: bool) -> PolicyResponse | None:
     return None
 
 
+def _github_permission(event: PolicyEvent) -> PolicyResponse | None:
+    prefixes = (
+        "mcp__codex_apps__github__",
+        "mcp__codex_apps__github_",
+        "mcp__github__",
+        "github__",
+    )
+    target = str(event.get("target", ""))
+    for prefix in prefixes:
+        if target.startswith(prefix):
+            if target.removeprefix(prefix) in {"fetch", "search", "compare_commits"}:
+                return {"result": "ALLOW"}
+            return github_policy(mcp_tool_prefixes=list(prefixes))(event) or {"result": "ALLOW"}
+    return None
+
+
 _REVIEW = {stage for stage in STAGES if stage.startswith(("review-", "verify-", "final-"))}
 
 
@@ -370,6 +386,9 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     )
     if linear is not None:
         return linear
+    github = _github_permission(event)
+    if github is not None:
+        return github
     if target.startswith("workflow_") or target in {
         "sys_session_send",
         "sys_session_create",
@@ -754,6 +773,11 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             linear = _linear_permission(str(target or ""), may_edit=True)
             if linear is not None:
                 return linear if phase == "tool_call" else {"result": "ALLOW"}
+            github = _github_permission(event)
+            if github is not None:
+                return github if phase == "tool_call" else {"result": "ALLOW"}
+        if phase == "tool_result" and target == "workflow_review_checkout":
+            return {"result": "ALLOW"}
         state = cast(
             Json,
             copy.deepcopy(event.get("session_state", {}).get(STATE_KEY) or {"status": "idle"}),
@@ -939,6 +963,15 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     )
             return _result(state)
         if phase == "tool_call":
+            if target == "workflow_review_checkout":
+                if state["status"] != "idle" or state.get("requested_workflow") not in (
+                    None,
+                    "review-fix",
+                ):
+                    return _deny(
+                        "PR checkout preparation is only available before starting Review"
+                    )
+                return {"result": "ALLOW"}
             if target == "workflow_draft" and state["status"] == "idle":
                 state.pop("draft", None)
                 data = event.get("data")
@@ -1085,7 +1118,12 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     "Default publish to false unless the user explicitly authorizes publication. "
                     "Read linked context with sys_session_get_history and Linear issues with "
                     "mcp__codex_apps__linear_get_issue. Pass a requested implementation branch "
-                    "as workflow_draft branch, not only in task text. This controller supplies "
+                    "as workflow_draft branch, not only in task text. GitHub read tools can read "
+                    "PR metadata and source. For a Review PR, call workflow_review_checkout with "
+                    "the local repository and PR URL; it finds or creates the PR worktree and "
+                    "returns repository, branch, baseline and base for workflow_draft. Use the "
+                    "PR merge target and Git merge-base; repository conventions are review "
+                    "criteria in task, not a Git baseline. This controller supplies "
                     "the command format; do not load the separate omnigent-workflow skill or "
                     "inspect files with shell commands. Summarize the validated task, repository, "
                     "baseline, target branch, candidate branch and publication permission. "
