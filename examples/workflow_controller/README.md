@@ -39,8 +39,9 @@ This includes shared local instructions and other monorepo services. Source
 writes and commands remain restricted to the assigned candidate. Paused or
 inactive workers cannot use this read access. Reads do not advance any gate.
 
-Beads journaling uses the bundled `workflow_journal` tool. It resolves an existing
-`.beads` in the assigned worktree, or in Git's main checkout when absent locally.
+Beads journaling uses the bundled `workflow_journal` tool. It resolves a session
+subfolder to its Git worktree root, then uses that root's existing `.beads`, or
+Git's main checkout journal when absent locally.
 Its `instructions` action returns `.beads/PRIME.md`. It lists, reads, creates,
 claims, comments on, and optionally closes session journals labeled
 `session,agent-journal`. It does not initialize journals or edit ordinary tracker

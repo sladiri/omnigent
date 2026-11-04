@@ -31,15 +31,20 @@ def linked_journal(repository, tmp_path, monkeypatch):
     return candidate, beads, calls
 
 
-def test_existing_main_journal_guidance_and_operations(linked_journal):
+@pytest.mark.parametrize("location", ["root", "main-subfolder", "linked-subfolder"])
+def test_existing_main_journal_guidance_and_operations(linked_journal, location):
     candidate, beads, calls = linked_journal
-    result = json.loads(journal.workflow_journal(str(candidate), "instructions"))
+    workspace = candidate
+    if location != "root":
+        workspace = (beads.parent if location == "main-subfolder" else candidate) / "services/app"
+        workspace.mkdir(parents=True)
+    result = json.loads(journal.workflow_journal(str(workspace), "instructions"))
     assert result["repository"] == str(beads.parent)
     assert result["instructions"] == "Record activity, not approvals."
     text = "[change] git push; $(touch /tmp/not-executed) 'quoted'\nnext line"
     for action in ("list", "show", "create", "claim", "comment", "close"):
         journal.workflow_journal(
-            str(candidate),
+            str(workspace),
             action,
             "test-1",
             "Session: journal (2026-11-03)" if action == "create" else text,
@@ -50,11 +55,14 @@ def test_existing_main_journal_guidance_and_operations(linked_journal):
     assert not (candidate / ".beads").exists()
 
 
-def test_local_journal_precedence(linked_journal):
+@pytest.mark.parametrize("subfolder", [False, True])
+def test_local_journal_precedence(linked_journal, subfolder):
     candidate, _, _ = linked_journal
     (candidate / ".beads").mkdir()
     (candidate / ".beads/PRIME.md").write_text("Local journal")
-    result = json.loads(journal.workflow_journal(str(candidate), "instructions"))
+    workspace = candidate / "services/app" if subfolder else candidate
+    workspace.mkdir(parents=True, exist_ok=True)
+    result = json.loads(journal.workflow_journal(str(workspace), "instructions"))
     assert result["repository"] == str(candidate)
     assert result["instructions"] == "Local journal"
 
