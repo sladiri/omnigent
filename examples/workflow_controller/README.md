@@ -66,8 +66,8 @@ the target branch and Git merge-base itself. Worktree preparation does not start
 review; click **Start workflow** after checking the draft. A Git fetch can wait
 for your hardware-key touch. Dirty or conflicting checkouts require your decision.
 For current local changes, the controller reviews committed and uncommitted task
-changes in that worktree. If the scope or baseline is unclear, it asks before starting. Findings wait for
-your decision before fixes. Approved fixes remain in the same worktree.
+changes in that worktree. If the scope or baseline is unclear, it asks before starting.
+Routine defects proceed to fixes within the approved scope in the same worktree.
 Review defaults to no publication unless you request it.
 
 For Compare, the coordinator shows stable design IDs, expected benefits and
@@ -204,8 +204,8 @@ require an intermediate commit.
 
 Each fix accounts for every outstanding finding. Its verification stage checks
 the resulting code. `final-b` rechecks Standards and Spec after the final C fixes.
-Any review or verification findings stop for your decision before the fix stage.
-After your answer, unresolved verification findings loop back to their fix stage,
+Routine review defects advance automatically to their fix stage without a question.
+Unresolved verification findings loop back to their fix stage,
 subject to the configured attempt limit. A successful turn or an idle worker is
 not a passed gate: the controller requires structured evidence, including explicit
 `findings` and `resolved` lists on every `COMPLETE` report.
@@ -218,9 +218,14 @@ changes; review quality still depends on the reviewers and their recorded checks
 ## Questions, selection, and recovery
 
 All workflows separate review from fixing. Every initial review, verification,
-and final review stops for findings, conflicts, questions, or blockers. Clean
-reviews continue. The parallel Standards and Spec reviews collect both reports
-before asking; no fix or later stage starts while a decision is pending.
+and final review routes actionable defects within the approved scope to fixes.
+Only real decisions, missing information, conflicting instructions, additional
+authorization, or missing capabilities pause dependent work. Questions identify
+what is needed and why the worker cannot proceed. The parallel Standards and Spec
+reviews collect both reports; a decision in either report pauses the pair, including
+mixed reports with routine defects. No fix starts while that decision is pending.
+Explicitly accepted exceptions remain in saved decisions and worker briefs across
+answers and restart. Reviews cannot create or broaden exceptions.
 
 The coordinator presents the findings and questions. In the web UI, click **Answer**,
 enter your decision, then click **Submit answer**. Nothing resumes until you submit.
@@ -291,9 +296,11 @@ start a second publication process while the first is waiting for your key.
 
 The coordinator supplies commit/PR text from the final diff. The host operation
 checks the repository PR template, stages the owned candidate files, and runs
-pre-commit before publication. New files are included in these checks.
-The candidate must have the repository's development prerequisites installed,
-including `.venv/bin/pre-commit` or `pre-commit` on PATH. Publication failures leave
+pre-commit when the candidate contains `.pre-commit-config.yaml`. New files are
+included in these checks. Configured repositories require `.venv/bin/pre-commit`
+or `pre-commit` on PATH. Other repositories use their native Git commit hooks;
+the workflow does not impose an unrelated check framework. Repository-required
+checks remain part of review and verification. Publication failures leave
 the run blocked; fix the cause, then retry the same run. Native approval prompts
 must be answered through their native UI.
 

@@ -356,6 +356,35 @@ def test_publish_refuses_multiple_push_destinations(repository: Path) -> None:
     assert _snapshot(workspace) == snapshot
 
 
+@pytest.mark.parametrize("configured", [False, True])
+def test_publish_requires_pre_commit_only_when_configured(repository, monkeypatch, configured):
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    operations._git(workspace, "remote", "add", "origin", "git@github.com:example/test.git")
+    (workspace / "hello.txt").write_text("reviewed change\n")
+    if configured:
+        (workspace / ".pre-commit-config.yaml").write_text("repos: []\n")
+    revision = _snapshot(workspace)["revision"]
+    original = operations._run
+    monkeypatch.setattr(operations.shutil, "which", lambda _: None)
+    monkeypatch.setattr(operations, "_desktop_environment", lambda _: {})
+
+    def run(path, *args, env=None):
+        if args[:3] == ("git", "--no-pager", "commit"):
+            raise RuntimeError("Reached native Git commit hooks")
+        assert args[0] != "gh"
+        return original(path, *args, env=env)
+
+    monkeypatch.setattr(operations, "_run", run)
+    error = ValueError if configured else RuntimeError
+    message = "Install pre-commit" if configured else "Reached native Git commit hooks"
+    with pytest.raises(error, match=message):
+        operations.workflow_publish(
+            str(workspace), revision, "TEST-1 feat: improve hello", "Reviewed change", "main"
+        )
+    assert _snapshot(workspace)["revision"] == revision
+
+
 def test_publish_checks_new_files_before_committing(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
