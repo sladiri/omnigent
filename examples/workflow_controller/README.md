@@ -34,8 +34,10 @@ answer. Answers and retries start a fresh worker for the same stage.
 Workers can read files and list directories throughout the original repository
 with `workflow_read`. The controller supplies the source path; the tool resolves
 session subfolders to the Git root. Absolute paths and paths relative to that
-root are accepted. Symlinks and traversal outside the root are rejected.
-This includes shared local instructions and other monorepo services. Source
+root are accepted. When the source is a linked worktree, absolute paths into
+Git's main checkout are also readable. This includes shared local instructions
+and other monorepo services. Other linked worktrees and paths outside both
+roots remain blocked, including symlink and traversal escapes. Source
 writes and commands remain restricted to the assigned candidate. Paused or
 inactive workers cannot use this read access. Reads do not advance any gate.
 

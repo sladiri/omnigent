@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from omnigent.workflows.operations import _git
 from tests._helpers.server_runner import server_runner
 from tests.e2e.conftest import (
     configure_mock_llm,
@@ -23,9 +24,10 @@ from tests.e2e.test_workflow_controller_e2e import (
 from tests.tools.test_workflow_operations import repository as repository
 
 
+@pytest.mark.parametrize("review_existing", [False, True])
 @pytest.mark.timeout(150)
 def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
-    repository, isolated_mock_llm_server_url, tmp_path
+    repository, isolated_mock_llm_server_url, tmp_path, review_existing
 ):
     mock_url = isolated_mock_llm_server_url
     model = "mock-repository-controller"
@@ -34,6 +36,12 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
     (repository / ".codex").mkdir()
     (repository / ".codex/config.toml").write_text('developer_instructions = "Shared guidance"')
     (repository / "CLAUDE.local.md").write_text("Original checkout instructions")
+    source = repository
+    stage = "implement"
+    if review_existing:
+        source = tmp_path / "candidate"
+        _git(repository, "worktree", "add", "-b", "candidate", str(source))
+        stage = "review-a"
     with server_runner(
         tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2]
     ) as stack:
@@ -57,9 +65,9 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
                 key=model,
             )
             definition = {
-                "workflow": "implement-review-fix",
-                "repository": str(repository),
-                "task": "Implement the greeting after reading source instructions.",
+                "workflow": "review-fix" if review_existing else "implement-review-fix",
+                "repository": str(source),
+                "task": "Check the greeting after reading source instructions.",
                 "baseline": "HEAD",
                 "base": "main",
                 "candidates": [{"id": "current", "task": "Read source context for the greeting."}],
@@ -84,12 +92,12 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
                     _tool(
                         "workflow_read",
                         "shared",
-                        {"repository": "/wrong", "path": "CLAUDE.local.md"},
+                        {"repository": "/wrong", "path": str(repository / "CLAUDE.local.md")},
                     ),
                     {
                         "text": json.dumps(
                             {
-                                "stage": "current/implement",
+                                "stage": "current/" + stage,
                                 "outcome": "NEEDS_INPUT",
                                 "evidence": "Read shared source instructions; decision needed.",
                                 "question": question,
@@ -111,7 +119,9 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
                 ],
                 key=model,
             )
-            send_user_message_to_session(client, session_id=sid, content="Begin implementation.")
+            send_user_message_to_session(
+                client, session_id=sid, content="Continue the approved workflow."
+            )
             _wait_for_text(client, sid, "WORKER_DISPATCHED")
             _release_worker(mock_url)
             items = _wait_for_text(client, sid, "WORKER_WAITING")
@@ -120,9 +130,9 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
             child_items = client.get(f"/v1/sessions/{child_id}/items").json()["data"]
             assert "Shared guidance" in _status(child_items, "instructions")["content"]
             assert "Original checkout instructions" in _status(child_items, "shared")["content"]
-            assert _status(child_items, "instructions")["repository"] == str(repository)
+            assert _status(child_items, "instructions")["repository"] == str(source)
             assert (repository / "CLAUDE.local.md").read_text() == "Original checkout instructions"
             preview = client.get(f"/v1/sessions/{sid}/workflow-draft").json()
-            assert preview["question"]["text"] == question
+            assert question in preview["question"]["text"]
             stack.restart_server()
             assert client.get(f"/v1/sessions/{sid}/workflow-draft").json() == preview
