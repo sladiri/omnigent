@@ -160,7 +160,13 @@ switch workflows. Direct definitions with multiple candidates
 and no workflow name also select Compare. New Compare runs use these gates;
 already-running workflows retain their saved workflow kind. `publish: true`
 authorizes the final signed commit, branch push, and PR creation after selection.
-Use `publish: false` to stop with the selected reviewed worktree. Starting a run
+Use `publish: false` to stop with the selected reviewed worktree. To publish later,
+send `/workflow publish <selected-id>` in the same chat (for Review, normally
+`/workflow publish current`). This explicitly authorizes the existing signed
+commit, push, and PR stages. It does not authorize merge or deployment.
+The controller rechecks the reviewed contents; changes require fresh reviews and
+selection. Ordinary messages and worker output cannot grant this permission.
+Commit-only requests do not authorize this command. Starting a run
 does not authorize merging or deployment.
 
 Implement and Compare preparation create dedicated candidate branches and

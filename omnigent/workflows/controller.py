@@ -675,12 +675,19 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
         if snapshot["revision"] != state["verified"].get(candidate["id"]):
             state["selected"] = None
             state.pop("publication_input", None)
+            state.pop("publication_authorized_revision", None)
             state["verified"].pop(candidate["id"], None)
             _set_stage(state, candidate, "review-a")
             state["question"] = "Selected candidate changed; reviews and selection must run again"
             return _result(state)
         state.update(
-            status="publish" if state["definition"].get("publish") else "complete", question=None
+            status="publish"
+            if (
+                state["definition"].get("publish")
+                or state.get("publication_authorized_revision") == snapshot["revision"]
+            )
+            else "complete",
+            question=None,
         )
         return _result(state)
     if purpose == "before":
@@ -1123,6 +1130,24 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 }
                 if comparison.enabled(state):
                     comparison.analysis_stage(state, "explore")
+            elif text.startswith("/workflow publish "):
+                candidate_id = text.removeprefix("/workflow publish ")
+                if (
+                    state["status"] != "complete"
+                    or state.get("publication")
+                    or _pending(state)
+                    or state.get("current") is not None
+                    or candidate_id != state.get("selected")
+                    or candidate_id not in state.get("verified", {})
+                ):
+                    return _deny("Publication requires a completed, selected, unpublished result")
+                revision = state["verified"][candidate_id]
+                state.setdefault("decisions", []).append({"command": text, "revision": revision})
+                state.update(
+                    publication_authorized_revision=revision,
+                    status="snapshot",
+                    snapshot_for="selection",
+                )
             elif text.startswith("/workflow select "):
                 candidate_id = text.removeprefix("/workflow select ")
                 if (

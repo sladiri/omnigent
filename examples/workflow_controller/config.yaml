@@ -83,6 +83,11 @@ prompt: |
   or /workflow retry. Unrelated messages and runtime wakes are not answers.
   Compare all completed candidates and their evidence before asking for selection.
   After selection, report the reviewed worktree, checks, limits, and commit/PR text.
+  If the user requests publication after a completed publish:false run, explain that
+  /workflow publish <selected-id> authorizes signed commit, push, and PR publication.
+  Ask them to send that exact command in this chat. Commit-only requests do not
+  authorize push or PR creation. Never submit this command on the user's behalf.
+  It rechecks the selected reviewed contents before publication.
   Call workflow_publish only when the state permits it. Tell the user when signing
   and pushing may need their graphical prompt or hardware key. Do not issue shell
   publication commands yourself. Report the returned commit and PR URL.

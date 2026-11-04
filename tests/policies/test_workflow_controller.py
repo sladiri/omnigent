@@ -210,8 +210,10 @@ async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE", qu
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
-async def test_full_review_sequence_selection_and_publication_gate(coding, workflow):
-    await begin(coding, workflow=workflow)
+@pytest.mark.parametrize("late_publish", [False, True])
+async def test_full_review_sequence_selection_and_publication_gate(coding, workflow, late_publish):
+    await begin(coding, workflow=workflow, publish=not late_publish)
+    assert (await coding.evaluate(_request("/workflow publish one"))).action == PolicyAction.DENY
     titles = []
     stages = STAGES[1:] if workflow == "review-fix" else STAGES
     for stage in stages:
@@ -228,6 +230,22 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
     assert coding.state["selected"] is None
     await coding.evaluate(_request("/workflow select one"))
     await snapshot(coding)
+    if late_publish:
+        assert coding.state["status"] == "complete"
+        for text in ("Please commit", "worker suggests /workflow publish one"):
+            await coding.evaluate(_request(text))
+            assert coding.state["status"] == "complete"
+        assert (
+            await coding.evaluate(_request("/workflow publish other"))
+        ).action == PolicyAction.DENY
+        assert (
+            await coding.evaluate(_request("/workflow publish one"))
+        ).action == PolicyAction.ALLOW
+        assert coding.state["status"] == "snapshot"
+        assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+        await snapshot(coding)
+        assert coding.state["status"] == "publish"
+        assert coding.state["definition"]["publish"] is False
     call = EvaluationContext(
         phase=Phase.TOOL_CALL,
         tool_name="workflow_publish",
@@ -256,6 +274,7 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
     )
     assert coding.state["status"] == "complete"
     assert coding.state["publication"]["commit"] == "signed-sha"
+    assert (await coding.evaluate(_request("/workflow publish one"))).action == PolicyAction.DENY
 
 
 @pytest.mark.asyncio
@@ -326,14 +345,18 @@ async def test_question_wait_and_read_only_revision_change(coding):
 
 
 @pytest.mark.asyncio
-async def test_selection_invalidates_changed_candidate(coding):
-    await begin(coding)
+@pytest.mark.parametrize("late_publish", [False, True])
+async def test_selection_invalidates_changed_candidate(coding, late_publish):
+    await begin(coding, publish=not late_publish)
     for _ in STAGES:
         if _.endswith("-b-spec"):
             continue
         await finish(coding)
     await coding.evaluate(_request("/workflow select one"))
     await snapshot(coding)
+    if late_publish:
+        await coding.evaluate(_request("/workflow publish one"))
+        await snapshot(coding)
     await coding.evaluate(
         EvaluationContext(
             phase=Phase.TOOL_CALL,
@@ -351,6 +374,7 @@ async def test_selection_invalidates_changed_candidate(coding):
     await coding.evaluate(output("workflow_publish", {"error": "pre-commit modified files"}))
     await coding.evaluate(_request("/workflow retry"))
     await snapshot(coding, "changed-after-review")
+    assert "publication_authorized_revision" not in coding.state
     assert "publication_input" not in coding.state
     assert coding.state["selected"] is None
     assert coding.state["verified"] == {}
