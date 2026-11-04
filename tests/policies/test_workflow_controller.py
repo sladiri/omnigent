@@ -56,7 +56,7 @@ def _completion(
     work_id: str | None = None,
     child_id: str = "child-1",
     evidence: str = "Checked the greeting: hello world.",
-    question: str = "Which language should the greeting use?",
+    question: str | None = None,
 ) -> EvaluationContext:
     output = json.dumps(
         {
@@ -65,7 +65,8 @@ def _completion(
             "evidence": evidence,
             "findings": [],
             "resolved": [],
-            "question": question,
+            "question": question
+            or ("Which language should the greeting use?" if outcome != "COMPLETE" else None),
         }
     )
     event = _subagent_tool_result_policy_request(
@@ -160,7 +161,7 @@ async def snapshot(probe, revision="tree-1"):
     )
 
 
-async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE"):
+async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE", question=None):
     dispatch = (await probe.evaluate(_call())).data
     assert dispatch and dispatch["title"].startswith(probe.state["current"])
     second = (await probe.evaluate(_call())).data if probe.state.get("parallel") else None
@@ -179,7 +180,7 @@ async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE"):
         "evidence": "Checks passed",
         "findings": findings or [],
         "resolved": list(probe.state["findings"]),
-        "question": "Which language?",
+        "question": question or ("Which language?" if outcome != "COMPLETE" else None),
     }
     await probe.evaluate(output("sys_session_send", report, request))
     if second:
@@ -262,21 +263,18 @@ async def test_findings_require_resolution_and_failed_recheck_loops_to_fix(codin
     await begin(coding, publish=False)
     await finish(coding)
     await finish(coding, findings=[{"id": "A-1", "message": "Missing case"}])
-    assert coding.state["status"] == "waiting-user"
-    await coding.evaluate(_request("/workflow answer Fix the reported case"))
-    await snapshot(coding)
+    assert coding.state["status"] == "ready"
+    assert coding.state["question"] is None
     assert coding.state["current"] == "one/fix-a"
     await finish(coding)
     await finish(coding, findings=[{"id": "A-2", "message": "Still missing"}])
-    assert coding.state["status"] == "waiting-user"
-    await coding.evaluate(_request("/workflow answer Fix the reported case"))
-    await snapshot(coding)
+    assert coding.state["status"] == "ready"
+    assert coding.state["question"] is None
     assert coding.state["current"] == "one/fix-a"
     await finish(coding)
     await finish(coding, findings=[{"id": "A-3", "message": "Still missing"}])
-    assert coding.state["status"] == "waiting-user"
-    await coding.evaluate(_request("/workflow answer Fix the reported case"))
-    await snapshot(coding)
+    assert coding.state["status"] == "ready"
+    assert coding.state["question"] is None
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state["status"] == "blocked"
     assert "limit" in coding.state["question"]
@@ -293,9 +291,8 @@ async def test_final_b_findings_rerun_b_and_c_on_the_fixed_revision(coding):
     await finish(
         coding, findings=[{"id": "regression", "message": "C broke B"}], revision=revision
     )
-    assert coding.state["status"] == "waiting-user"
-    await coding.evaluate(_request("/workflow answer Fix the regression"))
-    await snapshot(coding, revision)
+    assert coding.state["status"] == "ready"
+    assert coding.state["question"] is None
     assert coding.state["current"] == "one/fix-b"
     assert coding.state["verified"] == {}
     revision = "tree-fixed"

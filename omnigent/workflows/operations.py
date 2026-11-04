@@ -468,14 +468,17 @@ def workflow_publish(
         if not state.get("commit"):
             if not snapshot["dirty"]:
                 raise ValueError("No reviewed changes to commit")
-            local_hook = root / ".venv/bin/pre-commit"
-            hook = str(local_hook) if local_hook.is_file() else shutil.which("pre-commit")
-            if not hook:
-                raise ValueError(
-                    "Install pre-commit in the candidate .venv or on PATH before publication"
-                )
+            hook = None
+            if (root / ".pre-commit-config.yaml").exists():
+                local_hook = root / ".venv/bin/pre-commit"
+                hook = str(local_hook) if local_hook.is_file() else shutil.which("pre-commit")
+                if not hook:
+                    raise ValueError(
+                        "Install pre-commit in the candidate .venv or on PATH before publication"
+                    )
             _git(root, "add", "--all")
-            _run(root, hook, "run", "--all-files")
+            if hook:
+                _run(root, hook, "run", "--all-files")
             if json.loads(workflow_snapshot(str(root)))["revision"] != revision:
                 raise ValueError(
                     "Pre-commit changed reviewed contents; rerun reviews and selection"

@@ -586,15 +586,18 @@ def _brief(state: Json) -> str:
     task = (
         f"Load installed {skill} skills. Review the full task diff and connected code, "
         "including staged, unstaged and untracked files. Do not edit. "
-        "Report every problem, conflict, or decision for the user before any fix. "
-        "Use NEEDS_INPUT with an exact question for unresolved choices; use BLOCKED "
-        "for missing capabilities. Never resolve a user decision yourself."
+        "Return COMPLETE with actionable in-scope defects in findings; the controller "
+        "routes them to the fix stage automatically. Use NEEDS_INPUT only for a real "
+        "user decision, missing information, conflicting instructions, or additional "
+        "authorization; use BLOCKED for missing capabilities. The question must name "
+        "the decision or blocker and explain why you cannot proceed. Never ask whether "
+        "to fix routine findings or continue the authorized workflow."
         if review
         else "Implement the candidate and run its acceptance checks."
         if stage == "implement"
-        else "Address the recorded findings according to the user's decision and run "
-        "affected checks. If the decision is unclear or conflicts with required checks, "
-        "return NEEDS_INPUT. Report disputed findings as BLOCKED."
+        else "Fix the recorded defects within the approved scope and run affected checks. "
+        "Apply recorded user decisions. If a needed decision is missing or conflicts with "
+        "required checks, return NEEDS_INPUT. Report disputed findings as BLOCKED."
     )
     axes = (
         f"Perform only the {stage.rsplit('-', 1)[1]} axis of the code-review skill. "
@@ -626,15 +629,20 @@ def _brief(state: Json) -> str:
             "IDs). NEEDS_INPUT/BLOCKED also needs question.",
             f'Copy the exact stage ID into the report: "stage": {json.dumps(state["current"])}. '
             "Do not shorten it to the operation name.",
-            "COMPLETE attests required checks passed. Rechecks must inspect actual revised "
-            "code. Missing skills or unavailable required delegation are BLOCKED, never "
-            "silently skip them.",
+            "For reviews and rechecks, COMPLETE means the inspection finished; remaining "
+            "defects belong in findings and still require fixes and verification. For "
+            "implementation and fixes, COMPLETE attests required checks passed. Rechecks "
+            "must inspect actual revised code. Missing skills or unavailable required "
+            "delegation are BLOCKED, never silently skip them. Omit question when no "
+            "decision or blocker remains. Preserve explicitly accepted exceptions from "
+            "the saved decisions; do not create or broaden exceptions.",
             "For Compare, implement only the approved design. A materially different design "
             "needs a new approval: stop and return outcome NEEDS_DESIGN_APPROVAL with question. "
             "Do not treat clarification as permission to change the design.",
             f"Outstanding findings: {json.dumps(state.get('findings', {}))}",
             f"Incomplete evidence: {json.dumps(state.get('incomplete', {}))}",
             f"Prior evidence: {json.dumps(state['completed'])}",
+            f"User decisions: {json.dumps(state.get('decisions', []))}",
             f"User answer: {state.get('answer', '')}",
         ]
     )
@@ -712,10 +720,12 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
         return _block(state, "Fix did not account for every outstanding finding")
     if stage in _REVIEW:
         state["findings"] = findings
-    if findings:
-        fix = "fix-b" if "-b-" in stage else "fix-" + stage[-1]
-        reports = parallel["reports"] if parallel else {state["current"]: report}
-        _wait_for_review(state, reports, next_stage=fix)
+    fix = ("fix-b" if "-b-" in stage else "fix-" + stage[-1]) if findings else None
+    reports = parallel["reports"] if parallel else {state["current"]: report}
+    if _wait_for_review(state, reports, next_stage=fix):
+        return _result(state)
+    if fix:
+        _set_stage(state, candidate, fix)
         return _result(state)
     if stage == "final-b-spec":
         state["verified"][candidate["id"]] = state["revision"]
@@ -731,7 +741,7 @@ def _wait_for_review(state: Json, reports: Json, *, next_stage: str | None = Non
         key: report
         for key, report in reports.items()
         if key.split("/")[-1] in _REVIEW
-        and (report.get("outcome") != "COMPLETE" or report.get("findings"))
+        and (report.get("outcome") != "COMPLETE" or report.get("question"))
     }
     if not issues:
         return False
@@ -755,7 +765,7 @@ def _wait_for_review(state: Json, reports: Json, *, next_stage: str | None = Non
     )
     state.update(
         status="waiting-design-revision" if design_change else "waiting-user",
-        review_wait={"reports": issues, "next_stage": next_stage},
+        review_wait={"reports": reports, "next_stage": next_stage},
         question="\n".join(details) + f"\nReview stopped. Send {command}.",
     )
     return True
@@ -766,8 +776,8 @@ def _retire_dispatches(state: Json) -> bool:
     state["pending"] = None
     parallel = state.pop("parallel", {})
     reports = parallel.get("reports", {})
+    state.setdefault("incomplete", {}).update(reports)
     if _wait_for_review(state, reports):
-        state.setdefault("incomplete", {}).update(reports)
         return True
     return False
 

@@ -67,7 +67,10 @@ prompt: |
   On a completion wake, call sys_read_inbox and inspect workflow_status.
   Use workflow_reconcile after an interrupted or uncertain dispatch; never resend
   merely because a tool response was lost. Continue through satisfied gates.
-  When waiting-user or blocked, show the exact question and end the turn.
+  Completed reviews with routine in-scope defects advance to fixes automatically.
+  Follow that next action without asking whether to fix findings or continue.
+  When waiting-user or blocked, show the exact decision or blocker and why the worker
+  cannot proceed, then end the turn. Preserve recorded exceptions without adding any.
   For a stage question with no pending workers, in waiting-user or blocked, ask the
   user to click Answer, enter their decision or recovery instructions, and submit it.
   An answer records instructions for a checked retry; it does not fix missing access

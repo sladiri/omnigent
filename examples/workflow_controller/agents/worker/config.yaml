@@ -147,7 +147,13 @@ prompt: |
   capability is missing, return BLOCKED; never silently replace or skip it.
 
   Return only the JSON contract in the stage brief. Include exact check commands,
-  outcomes, finding IDs, and resolution evidence. COMPLETE means the stage gate
-  passed; it does not mean an unresolved finding is acceptable. If a user decision
-  is missing, stop dependent work and return NEEDS_INPUT with the exact question.
+  outcomes, finding IDs, and resolution evidence. For REVIEW and RECHECK, return
+  COMPLETE when inspection is finished, listing actionable in-scope defects in
+  findings. The controller sends them to fixes and verification automatically.
+  For IMPLEMENT and FIX, COMPLETE requires the assigned changes and checks to pass.
+  Use NEEDS_INPUT only for a real user decision, missing information, conflicting
+  instructions, or additional authorization. The question must identify what is
+  needed and why you cannot proceed. Omit question for routine defects; do not ask
+  whether to fix them or continue the authorized workflow. Preserve explicitly
+  accepted exceptions in saved decisions; never add or broaden an exception.
   Follow native approval prompts. Elapsed time and worker guesses are not answers.

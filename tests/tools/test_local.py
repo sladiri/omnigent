@@ -17,6 +17,7 @@ from omnigent.runner.identity import RUNNER_TUNNEL_BINDING_TOKEN_ENV_VAR
 from omnigent.spec.types import LocalToolInfo, SandboxConfig, ToolRuntime
 from omnigent.tools.base import ToolContext
 from omnigent.tools.local import (
+    _MAX_RESPONSE_BYTES,
     LocalPythonTool,
     LocalToolLoadError,
     load_local_python_tools,
@@ -263,18 +264,61 @@ def test_invoke_empty_args(tmp_path: Path, tool_ctx: ToolContext) -> None:
     assert "Error" in result or "missing" in result.lower()
 
 
-def test_cancel_kills_subprocess(tmp_path: Path, tool_ctx: ToolContext) -> None:
-    """``cancel()`` sends SIGKILL to the running subprocess."""
+@pytest.mark.parametrize(
+    "size",
+    [128 * 1024, _MAX_RESPONSE_BYTES - len(json.dumps({"result": ""})), 2 * _MAX_RESPONSE_BYTES],
+)
+def test_large_response_drains_all_pipes(tmp_path: Path, tool_ctx: ToolContext, size: int) -> None:
+    """Large results and stdout/stderr must not block each other's pipes."""
+    py_dir = tmp_path / "tools" / "python"
+    _write_decorated_tool(
+        py_dir,
+        "large.py",
+        body=(
+            "import sys\nprint('o' * 131072)\n"
+            "print('e' * 131072, file=sys.stderr)\nreturn 'x' * int(value)"
+        ),
+    )
+    info = LocalToolInfo(name="large", path="tools/python/large.py", language="python")
+    tool = load_local_python_tools([info], tmp_path, srt_available=False)[0]
+    results: list[str] = []
+    thread = threading.Thread(
+        target=lambda: results.append(tool.invoke(json.dumps({"value": str(size)}), tool_ctx)),
+        daemon=True,
+    )
+    thread.start()
+    try:
+        thread.join(10)
+        assert not thread.is_alive(), "tool response pipe deadlocked"
+        if size > _MAX_RESPONSE_BYTES:
+            assert results == [f"Error: tool response exceeds {_MAX_RESPONSE_BYTES}-byte limit"]
+        else:
+            assert results == ["x" * size]
+        assert not tool._live_procs
+    finally:
+        tool.cancel()
+        thread.join(5)
+
+
+@pytest.mark.parametrize("partial_response", [False, True])
+def test_cancel_kills_subprocess(
+    tmp_path: Path, tool_ctx: ToolContext, partial_response: bool
+) -> None:
+    """Cancellation releases both an empty and an incomplete response pipe."""
     py_dir = tmp_path / "tools" / "python"
     # Sleep for 60s so the test has a window to cancel.
     _write_decorated_tool(
         py_dir,
         "slow.py",
         func_name="slow",
-        body="import time\ntime.sleep(60)\nreturn 'never'",
+        body=(
+            "import os, time\nfrom pathlib import Path\n"
+            + ('os.write(int(os.environ["_AP_RESPONSE_FD"]), b"{")\n' if partial_response else "")
+            + "Path(value).touch()\ntime.sleep(60)\nreturn 'never'"
+        ),
     )
     info = LocalToolInfo(name="slow", path="tools/python/slow.py", language="python")
-    tools = load_local_python_tools([info], tmp_path)
+    tools = load_local_python_tools([info], tmp_path, srt_available=False)
     tool = tools[0]
 
     # Start the subprocess in a background thread; cancel from main.
@@ -282,29 +326,26 @@ def test_cancel_kills_subprocess(tmp_path: Path, tool_ctx: ToolContext) -> None:
 
     result_holder: dict[str, str] = {}
 
+    ready = tmp_path / "ready"
+
     def _invoke() -> None:
-        result_holder["result"] = tool.invoke(json.dumps({"value": "x"}), tool_ctx)
+        result_holder["result"] = tool.invoke(json.dumps({"value": str(ready)}), tool_ctx)
 
     thread = threading.Thread(target=_invoke, daemon=True)
     thread.start()
-    # Wait for the subprocess to actually start so cancel has something to kill.
     import time
 
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        with tool._procs_lock:
-            started = bool(tool._live_procs)
-        if started:
-            break
-        time.sleep(0.05)
-    with tool._procs_lock:
-        assert tool._live_procs, "subprocess never started"
-
-    tool.cancel()
-    thread.join(timeout=5.0)
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "subprocess never reached its response write"
+    finally:
+        tool.cancel()
+        thread.join(timeout=5.0)
     assert not thread.is_alive(), "invoke() did not return after cancel()"
-    # Result should be an error (subprocess killed → no response).
     assert "Error" in result_holder["result"]
+    assert not tool._live_procs
 
 
 # ─── Loader ─────────────────────────────────────────────────────────
