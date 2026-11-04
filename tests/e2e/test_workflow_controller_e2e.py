@@ -174,7 +174,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         "baseline": "HEAD",
         "base": "main",
         "candidates": [{"id": "a", "task": "Use hello."}],
-        "publish": True,
+        "publish": not review,
         "worktree_setup": False,
     }
     start_message = "/workflow start " + json.dumps(definition)
@@ -610,8 +610,17 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
     )
     assert _status(items, "unselected-status")["selected"] is None
     assert not publication_record.exists()
+    if review:
+        items = parent_turn(
+            "/workflow select a",
+            [snapshot("unpublished-snapshot"), _tool("workflow_status", "unpublished-status")],
+            "REVIEW_COMPLETE_UNPUBLISHED",
+        )
+        assert _status(items, "unpublished-status")["status"] == "complete"
+        assert not publication_record.exists()
+        restart_live_runner()
     items = parent_turn(
-        "/workflow select a",
+        "/workflow publish a" if review else "/workflow select a",
         [
             snapshot("selection-snapshot"),
             _tool("workflow_publish", "selected-publish", publish_args),
