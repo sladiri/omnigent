@@ -16,7 +16,10 @@ from tests.tools.test_workflow_operations import repository as repository
 @pytest.mark.parametrize(
     "stage", ["implement", "fix-a", "review-a", "verify-a", "explore", "compare-results"]
 )
-def test_source_monorepo_read_from_subfolder(repository, tmp_path, monkeypatch, stage):
+@pytest.mark.parametrize("linked_source", [False, True])
+def test_source_monorepo_read_from_subfolder(
+    repository, tmp_path, monkeypatch, stage, linked_source
+):
     subfolder = repository / "services" / "homekit"
     subfolder.mkdir(parents=True)
     instructions = repository / ".codex" / "config.toml"
@@ -25,9 +28,18 @@ def test_source_monorepo_read_from_subfolder(repository, tmp_path, monkeypatch, 
     (repository / "CLAUDE.local.md").write_text("Shared instructions\nSecond line\n")
     candidate = tmp_path / "candidate"
     _git(repository, "worktree", "add", "-b", "candidate", str(candidate))
+    if linked_source:
+        subfolder = candidate / "services" / "homekit"
+        subfolder.mkdir(parents=True)
+        (candidate / "CLAUDE.local.md").write_text("Candidate instructions\nSecond line\n")
+    source = candidate if linked_source else repository
+    other = tmp_path / "other"
+    _git(repository, "worktree", "add", "-b", "other", str(other))
     outside = tmp_path / "unrelated.txt"
     outside.write_text("Outside the repository")
     (repository / "escape").symlink_to(outside)
+    if linked_source:
+        (candidate / "escape").symlink_to(outside)
     pending = {
         "stage": stage if stage in {"explore", "compare-results"} else "one/" + stage,
         "title": "assigned",
@@ -59,7 +71,8 @@ def test_source_monorepo_read_from_subfolder(repository, tmp_path, monkeypatch, 
     before = copy.deepcopy(state)
     for path, expected in [
         (str(instructions), "Read shared guidance"),
-        ("CLAUDE.local.md", "Shared instructions"),
+        (str(repository / "CLAUDE.local.md"), "Shared instructions"),
+        ("CLAUDE.local.md", "Candidate instructions" if linked_source else "Shared instructions"),
         ("hello.txt", "hello"),
     ]:
         allowed = call("workflow_read", repository=str(tmp_path), path=path)
@@ -67,6 +80,7 @@ def test_source_monorepo_read_from_subfolder(repository, tmp_path, monkeypatch, 
         assert allowed["data"]["repository"] == str(subfolder)
         result = json.loads(workflow_read(**allowed["data"]))
         assert expected in result["content"]
+        assert result["repository"] == str(source)
     assert "services" in json.loads(workflow_read(str(subfolder)))["entries"]
     assert (
         json.loads(workflow_read(str(subfolder), "CLAUDE.local.md", offset=2, limit=1))[
@@ -74,7 +88,16 @@ def test_source_monorepo_read_from_subfolder(repository, tmp_path, monkeypatch, 
         ].strip()
         == "Second line"
     )
-    for path in (str(outside), "../unrelated.txt", "escape", str(candidate / "hello.txt")):
+    forbidden = [
+        str(outside),
+        "../unrelated.txt",
+        "escape",
+        str(other / "hello.txt"),
+        str(repository / "escape"),
+    ]
+    if not linked_source:
+        forbidden.append(str(candidate / "hello.txt"))
+    for path in forbidden:
         with pytest.raises(ValueError, match="inside the source repository"):
             workflow_read(str(subfolder), path)
     assert call("sys_os_write", path=str(instructions), content="overwrite")["result"] == "DENY"
