@@ -8,11 +8,13 @@ from pathlib import Path
 import httpx
 import pytest
 
+from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
 from omnigent.workflows.operations import _git
 from tests._helpers.server_runner import server_runner
+from tests._helpers.session import bind_session_runner
 from tests.e2e.conftest import (
     configure_mock_llm,
-    create_runner_bound_session,
+    lookup_agent_id,
     register_dir_agent_with_mock_llm,
     send_user_message_to_session,
 )
@@ -58,8 +60,10 @@ def test_review_journals_in_main_checkout_and_keeps_wait_after_restart(
         "    print(json.dumps({'recorded': True}))\n"
     )
     br.chmod(0o755)
+    service = main / "services/app"
+    service.mkdir(parents=True)
     with server_runner(
-        tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2]
+        tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2], workspace=service
     ) as stack:
         stack.start_runner(env={"PATH": str(fakebin) + os.pathsep + os.environ["PATH"]})
         with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
@@ -70,7 +74,50 @@ def test_review_journals_in_main_checkout_and_keeps_wait_after_restart(
                 model=model,
                 mock_llm_base_url=f"{mock_url}/v1",
             )
-            sid = create_runner_bound_session(client, agent_name=name, runner_id=stack.runner_id)
+            response = client.post(
+                "/v1/sessions",
+                json={"agent_id": lookup_agent_id(client, name), "workspace": str(service)},
+                headers={"Origin": OMNIGENT_INTERNAL_WS_ORIGIN},
+            )
+            response.raise_for_status()
+            sid = response.json()["id"]
+            bind_session_runner(client.patch, "", sid, stack.runner_id)
+            for attempt in range(2):
+                configure_mock_llm(
+                    mock_url,
+                    [
+                        _tool(
+                            "workflow_journal",
+                            f"idle-instructions-{attempt}",
+                            {"repository": "/wrong", "action": "instructions"},
+                        ),
+                        _tool(
+                            "workflow_journal",
+                            f"idle-comment-{attempt}",
+                            {
+                                "repository": "/wrong",
+                                "action": "comment",
+                                "issue": "test-1",
+                                "text": "[verification] Preparation journal from a subfolder.",
+                            },
+                        ),
+                        _tool("workflow_status", f"idle-status-{attempt}"),
+                        {"text": f"PREPARATION_JOURNALED_{attempt}"},
+                    ],
+                    key=model,
+                )
+                send_user_message_to_session(
+                    client, session_id=sid, content="Record preparation. Do not start the review."
+                )
+                items = _wait_for_text(client, sid, f"PREPARATION_JOURNALED_{attempt}")
+                assert _status(items, f"idle-instructions-{attempt}")["repository"] == str(main)
+                assert _status(items, f"idle-comment-{attempt}") == {"recorded": True}
+                assert _status(items, f"idle-status-{attempt}")["status"] == "idle"
+                assert json.loads((beads / "recorded.json").read_text()) == (
+                    "[verification] Preparation journal from a subfolder."
+                )
+                assert not (service / ".beads").exists()
+                stack.restart_server()
             configure_mock_llm(
                 mock_url,
                 [

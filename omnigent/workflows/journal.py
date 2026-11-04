@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from omnigent.host.git_worktree import list_worktrees
-from omnigent.workflows.operations import _run, _workspace
+from omnigent.workflows.operations import _git, _run
 
 ACTIONS = frozenset({"instructions", "list", "show", "create", "claim", "comment", "close"})
 
@@ -17,7 +17,9 @@ def workflow_journal(repository: str, action: str, issue: str = "", text: str = 
     """Run fixed Beads journal operations without shell or arbitrary database arguments."""
     if action not in ACTIONS:
         raise ValueError("Unknown journal action")
-    root = _workspace(repository)
+    root = Path(
+        _git(Path(repository).expanduser().resolve(strict=True), "rev-parse", "--show-toplevel")
+    ).resolve()
     if not (root / ".beads").is_dir():
         root = Path(list_worktrees(repo_path=str(root))[0].path).resolve()
     beads = root / ".beads"
