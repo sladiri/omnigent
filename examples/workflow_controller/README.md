@@ -110,6 +110,47 @@ The default coordinator and worker harness is `codex-native`. Configure that
 harness normally before launching. The server and local runner must both use an
 Omnigent installation containing `omnigent.workflows`.
 
+### Model and reasoning effort
+
+The bundle defaults the coordinator to GPT-6 Astra/high. All exploration,
+comparison, review, verification, and final review workers use Astra/xhigh.
+Implementation and fix workers use GPT-6.1 Sol/high. Journaling and publication
+keep their existing tools and callers; no extra helper sessions are created.
+The controller's model and effort remain the session's launch selection.
+
+The bundle's `guardrails.policies.workflow.factory_params` declares
+`worker_defaults` and `stages`. Each workflow definition can override these
+settings through the same fields, including via `workflow_draft`. For example,
+this fragment changes implementation effort and one review stage:
+
+```yaml
+worker_defaults:
+  model: gpt-6-astra
+  reasoning_effort: xhigh
+stages:
+  implement:
+    model: gpt-6.1-sol
+    reasoning_effort: xhigh
+  review-a:
+    reasoning_effort: high
+```
+
+Fields merge with the bundle settings; each named stage overrides worker defaults.
+Use exact stage names: `explore`, `compare-results`, `implement`, `review-a`,
+`fix-a`, `verify-a`, `review-b-standards`, `review-b-spec`, `fix-b`,
+`verify-b-standards`, `verify-b-spec`, `review-c`, `fix-c`, `verify-c`,
+`final-b-standards`, and `final-b-spec`. Unknown stages or settings are rejected.
+Models must be available to the worker's Codex account; effort must be supported
+by that model. The native harness validates the selected model/effort pair.
+
+The resolved configuration is saved with the approved draft and workflow run.
+Each fresh worker gets its stage's model and effort. Resume and reconciliation
+reuse existing workers without changing either setting. A retry creates a new
+worker with the saved stage settings. Older runs without these fields retain
+their existing inheritance behavior. Reinstalling the bundle changes defaults
+for new runs, not settings already saved in a run. Model selection does not
+guarantee prompt-cache hits.
+
 The coordinator prepares the start command for you. For direct API/CLI use,
 send a JSON definition with the repository and task. Implement and Compare need
 a clean repository so candidate ownership is unambiguous. Review accepts the

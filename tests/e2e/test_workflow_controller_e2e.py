@@ -80,6 +80,11 @@ def _mock_bundle(destination: Path, child_model: str, mock_base: str) -> Path:
     config_path = bundle / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["executor"]["config"]["harness"] = "openai-agents"
+    config["executor"].pop("model", None)
+    routing = config["guardrails"]["policies"]["workflow"]["factory_params"]
+    routing["worker_defaults"]["model"] = child_model
+    for settings in routing["stages"].values():
+        settings["model"] = child_model + "-implementation"
     config_path.write_text(yaml.safe_dump(config))
     worker_path = bundle / "agents/worker/config.yaml"
     worker = yaml.safe_load(worker_path.read_text())
@@ -254,6 +259,9 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
             )
             assert trees.count("worktree ") == 1
             child_id = _status(items, f"explore-send-{revision}")["conversation_id"]
+            child = http_client.get(f"/v1/sessions/{child_id}").json()
+            assert child["model_override"] == child_model
+            assert child["reasoning_effort"] == "xhigh"
             child_items = http_client.get(
                 f"/v1/sessions/{child_id}/items", params={"limit": 1000}
             ).json()["data"]
@@ -472,6 +480,12 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         for stage in group:
             assert f"a/{stage}" in state["completed"], state
             child_id = _status(items, f"{stage}-send")["conversation_id"]
+            child = http_client.get(f"/v1/sessions/{child_id}").json()
+            implementation = stage == "implement" or stage.startswith("fix-")
+            assert child["model_override"] == child_model + (
+                "-implementation" if implementation else ""
+            )
+            assert child["reasoning_effort"] == ("high" if implementation else "xhigh")
             child_items = http_client.get(
                 f"/v1/sessions/{child_id}/items", params={"limit": 1000}
             ).json()["data"]
@@ -679,6 +693,8 @@ def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
                 "workflow": "compare-review-fix",
                 "repository": str(tmp_path),
                 "task": "Compare designs",
+                "worker_defaults": {"model": "mock-design", "reasoning_effort": "high"},
+                "stages": {"explore": {"reasoning_effort": "xhigh"}},
                 "baseline": "HEAD",
                 "base": "main",
             }
@@ -686,6 +702,8 @@ def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
             dispatched = evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})
             assert "data" in dispatched, dispatched
             dispatch = dispatched["data"]
+            assert dispatch["args"]["model"] == "mock-design"
+            assert dispatch["args"]["reasoning_effort"] == "xhigh"
             evaluate(
                 "PHASE_TOOL_RESULT",
                 {
@@ -718,6 +736,11 @@ def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
             status = evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})
             state = json.loads(status["data"])
             assert state["status"] == "waiting-design-selection"
+            assert state["definition"]["worker_defaults"] == {
+                "model": "mock-design",
+                "reasoning_effort": "high",
+            }
+            assert state["definition"]["stages"]["explore"] == {"reasoning_effort": "xhigh"}
             assert state["designs"]["revision"] == 1
             denied = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
             assert denied["result"] == "POLICY_ACTION_DENY"

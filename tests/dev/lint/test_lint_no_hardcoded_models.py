@@ -196,3 +196,14 @@ def test_precommit_trigger_matches_scan_surface() -> None:
     assert triggered_paths == scanned_paths
     for extension in SOURCE_EXTENSIONS:
         assert files_pattern.search(Path(f"lint_probe{extension}").as_posix())
+
+
+def test_workflow_bundle_can_configure_models_without_exempting_runtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bundle = Path("examples/workflow_controller/config.yaml")
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("executor:\n  model: gpt-6-astra\n")
+    assert scan(bundle) == []
+    runtime = Path("controller.py")
+    runtime.write_text('MODEL = "gpt-6-astra"\n')
+    assert len(scan(runtime)) == 1

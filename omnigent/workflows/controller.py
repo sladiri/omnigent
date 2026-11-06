@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 from omnigent.entities import Conversation
+from omnigent.models.model_override import validate_model_override
 from omnigent.policies.builtins._shell import (
     MAX_SHELL_NESTING,
     real_invocation_tokens,
@@ -23,6 +24,7 @@ from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
 from omnigent.policies.builtins.working_dir import _GIT_VALUE_OPTS, block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
 from omnigent.stores import ConversationStore
+from omnigent.util.reasoning_effort import CODEX_NATIVE_EFFORTS
 from omnigent.workflows import comparison
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
@@ -36,7 +38,11 @@ POLICY_REGISTRY = [
         "description": "Enforce implementation, review, selection, and publication gates.",
         "params_schema": {
             "type": "object",
-            "properties": {"max_attempts": {"type": "integer", "minimum": 1, "default": 2}},
+            "properties": {
+                "max_attempts": {"type": "integer", "minimum": 1, "default": 2},
+                "worker_defaults": {"type": "object"},
+                "stages": {"type": "object"},
+            },
             "additionalProperties": False,
         },
     }
@@ -246,7 +252,45 @@ def _block(state: Json, question: str) -> PolicyResponse:
     return _result(state)
 
 
-def _definition(raw: str, conversation_id: str) -> Json:
+def _execution_settings(
+    definition: Json, worker_defaults: Json | None = None, stages: Json | None = None
+) -> Json:
+    """Validate and freeze bundle defaults plus per-run stage overrides."""
+
+    def settings(value: object) -> Json:
+        if not isinstance(value, dict) or set(value) - {"model", "reasoning_effort"}:
+            raise ValueError("Worker settings allow only model and reasoning_effort")
+        result = dict(value)
+        if "model" in result:
+            if not isinstance(result["model"], str):
+                raise ValueError("Worker model must be a string")
+            result["model"] = validate_model_override(result["model"])
+        if "reasoning_effort" in result and (
+            not isinstance(result["reasoning_effort"], str)
+            or result["reasoning_effort"] not in CODEX_NATIVE_EFFORTS
+        ):
+            raise ValueError("Unsupported worker reasoning_effort")
+        return result
+
+    defaults = {
+        **settings(worker_defaults if worker_defaults is not None else {}),
+        **settings(definition.get("worker_defaults", {})),
+    }
+    overrides = {}
+    for mapping in (stages if stages is not None else {}, definition.get("stages", {})):
+        if (
+            not isinstance(mapping, dict)
+            or set(mapping) - set(STAGES) - comparison.ANALYSIS_STAGES
+        ):
+            raise ValueError("Worker stages must name existing workflow stages")
+        for stage, value in mapping.items():
+            overrides[stage] = {**overrides.get(stage, {}), **settings(value)}
+    return {"worker_defaults": defaults, "stages": overrides}
+
+
+def _definition(
+    raw: str, conversation_id: str, worker_defaults: Json | None = None, stages: Json | None = None
+) -> Json:
     definition = json.loads(raw)
     if not isinstance(definition, dict):
         raise ValueError("Definition must be an object")
@@ -281,6 +325,7 @@ def _definition(raw: str, conversation_id: str) -> Json:
         raise ValueError("Candidate IDs must be unique")
     if type(definition.get("publish", False)) is not bool:
         raise ValueError("publish must be boolean")
+    definition.update(_execution_settings(definition, worker_defaults, stages))
     definition["run_id"] = conversation_id
     definition.setdefault("remote", "origin")
     return definition
@@ -294,6 +339,8 @@ def draft_start_message(
     base: str,
     publish: bool = False,
     branch: str = "",
+    worker_defaults: dict[str, str] | None = None,
+    stages: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Validate a proposed start command without starting work or changing state."""
     try:
@@ -308,6 +355,8 @@ def draft_start_message(
                     "baseline": baseline,
                     "base": base,
                     "publish": publish,
+                    "worker_defaults": worker_defaults if worker_defaults is not None else {},
+                    "stages": stages if stages is not None else {},
                     "candidates": []
                     if workflow == comparison.NAME
                     else [
@@ -1049,7 +1098,9 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
     return _result(state, data=json.dumps(state))
 
 
-def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyResponse]:
+def _coding_controller(
+    max_attempts: int, execution: Json
+) -> Callable[[PolicyEvent], PolicyResponse]:
     def evaluate(event: PolicyEvent) -> PolicyResponse:
         phase, target = event.get("type"), event.get("target")
         if phase not in {"request", "tool_call", "tool_result"}:
@@ -1105,6 +1156,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
             # Only the server's user-message gate may apply decisions; native hooks echo it.
             if not isinstance(event.get("data"), dict) or context.get("harness") is not None:
                 return {"result": "ALLOW"}
+            approved_draft = False
             text = request_user_text(event.get("data")).strip()
             if text.startswith("/workflow answer-question "):
                 token, _, answer = text.removeprefix("/workflow answer-question ").partition(" ")
@@ -1125,6 +1177,7 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                         "This draft is no longer current. Prepare and review a new draft."
                     )
                 text = draft["command"]
+                approved_draft = True
             if state["status"] == "idle":
                 if text:
                     state.pop("draft", None)
@@ -1153,7 +1206,9 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                                 "Start message must use the workflow selected by the button"
                             )
                         raw["workflow"] = requested
-                    definition = _definition(json.dumps(raw), session_id)
+                    definition = _definition(
+                        json.dumps(raw), session_id, **({} if approved_draft else execution)
+                    )
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
                 state = {
@@ -1301,7 +1356,13 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                     and args.get("workflow") != state["requested_workflow"]
                 ):
                     return _deny("Draft must use the workflow selected by the button")
-                return _result(state)
+                try:
+                    resolved = _execution_settings(args, **execution)
+                except (ValueError, TypeError) as exc:
+                    return _deny(str(exc))
+                if not any(resolved.values()):
+                    return _result(state)
+                return _result(state, data={**args, **resolved})
             if target in READ_TOOLS or target == "workflow_reconcile":
                 return _result(state)
             if target == "workflow_present" and state["status"] in {
@@ -1395,20 +1456,26 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 data={
                     "agent": "worker",
                     "title": title,
-                    "args": (
-                        f"Stage: {current}\n"
-                        "Read workflow_stage and return its report. Do not create a goal."
-                        if current in comparison.ANALYSIS_STAGES
-                        else f"/goal Stage: {current}\n"
-                        "Produce the final report for your assigned workflow stage. "
-                        "First call workflow_stage for the complete task, worktree, checks, "
-                        "and report contract. Work only on that stage. Continue until its "
-                        "checks are done or a user decision or external blocker prevents "
-                        "progress. Then mark this report goal complete and return the "
-                        "required JSON, using NEEDS_INPUT or BLOCKED when appropriate. "
-                        "Completing this report goal does not attest that the stage passed. "
-                        "The controller owns stage advancement and user decisions."
-                    ),
+                    "args": {
+                        **state["definition"].get("worker_defaults", {}),
+                        **state["definition"]
+                        .get("stages", {})
+                        .get(current.rsplit("/", 1)[-1], {}),
+                        "input": (
+                            f"Stage: {current}\n"
+                            "Read workflow_stage and return its report. Do not create a goal."
+                            if current in comparison.ANALYSIS_STAGES
+                            else f"/goal Stage: {current}\n"
+                            "Produce the final report for your assigned workflow stage. "
+                            "First call workflow_stage for the complete task, worktree, checks, "
+                            "and report contract. Work only on that stage. Continue until its "
+                            "checks are done or a user decision or external blocker prevents "
+                            "progress. Then mark this report goal complete and return the "
+                            "required JSON, using NEEDS_INPUT or BLOCKED when appropriate. "
+                            "Completing this report goal does not attest that the stage passed. "
+                            "The controller owns stage advancement and user decisions."
+                        ),
+                    },
                     "workspace": _candidate(state)["workspace"],
                 },
             )
@@ -1420,14 +1487,16 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
                 if not isinstance(command, str) or not command.startswith("/workflow start "):
                     return _deny("Invalid draft command")
                 try:
-                    definition = _definition(command.removeprefix("/workflow start "), session_id)
+                    definition = _definition(
+                        command.removeprefix("/workflow start "), session_id, **execution
+                    )
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
                 if state.get("requested_workflow") not in (None, definition["workflow"]):
                     return _deny("Draft must use the workflow selected by the button")
                 state["draft"] = {
                     "token": uuid.uuid4().hex,
-                    "command": command,
+                    "command": "/workflow start " + json.dumps(definition),
                     "definition": definition,
                 }
             return _result(state)
@@ -1546,8 +1615,10 @@ def _coding_controller(max_attempts: int) -> Callable[[PolicyEvent], PolicyRespo
     return evaluate
 
 
-def make_controller(max_attempts: int = 2) -> Callable[[PolicyEvent], PolicyResponse]:
+def make_controller(
+    max_attempts: int = 2, worker_defaults: Json | None = None, stages: Json | None = None
+) -> Callable[[PolicyEvent], PolicyResponse]:
     """Build the persisted coding workflow controller."""
     if type(max_attempts) is not int or max_attempts < 1:
         raise ValueError("max_attempts must be a positive integer")
-    return _coding_controller(max_attempts)
+    return _coding_controller(max_attempts, _execution_settings({}, worker_defaults, stages))

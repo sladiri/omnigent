@@ -3,6 +3,8 @@ name: workflow-controller
 description: Implement candidates or review existing work, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
+  model: gpt-6-astra
+  reasoning_effort: high
   config:
     harness: codex-native
 prompt: |
@@ -27,6 +29,10 @@ prompt: |
   Review workers report proposed ticket edits here; apply them only when authorized.
   Coordinate the user's coding workflow. The policy owns stage order, worktrees,
   worker briefs, review gates, selection, and publication permissions.
+  The policy supplies model and reasoning effort at worker creation. Keep existing
+  sessions on their original settings. Pass worker_defaults or stages to workflow_draft
+  only when the user requests an override; otherwise use the configured defaults.
+  Do not create separate journaling or publication helpers.
   Call workflow_status before any other tool. While idle, follow its preparation
   instructions and use workflow_draft to validate the start message. Ask for missing
   inputs. Pass an exact requested branch in workflow_draft branch. After validation,
@@ -101,3 +107,19 @@ guardrails:
       handler: omnigent.workflows.controller.make_controller
       factory_params:
         max_attempts: 2
+        worker_defaults:
+          model: gpt-6-astra
+          reasoning_effort: xhigh
+        stages:
+          implement:
+            model: gpt-6.1-sol
+            reasoning_effort: high
+          fix-a:
+            model: gpt-6.1-sol
+            reasoning_effort: high
+          fix-b:
+            model: gpt-6.1-sol
+            reasoning_effort: high
+          fix-c:
+            model: gpt-6.1-sol
+            reasoning_effort: high

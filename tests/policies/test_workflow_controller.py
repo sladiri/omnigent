@@ -745,8 +745,8 @@ async def test_worker_enforces_identity_paths_publication_and_review_read_only(
         assert (
             await worker_call("exec_command", {"cmd": command, "workdir": "/tmp/candidate"})
         ).action == PolicyAction.DENY
-    assert dispatch["args"].startswith("/goal ")
-    assert len(dispatch["args"]) < 4000
+    assert dispatch["args"]["input"].startswith("/goal ")
+    assert len(dispatch["args"]["input"]) < 4000
     assert (await worker_call("workflow_stage", {})).action == PolicyAction.ALLOW
     engine = build_policy_engine(
         spec=coding.spec, conversation_id=child.id, conversation_store=coding.store
@@ -866,9 +866,9 @@ async def test_goal_brief_is_unabridged_and_bound_to_each_parallel_worker(coding
         brief = (await engine.evaluate(output("workflow_stage", "stub"))).data
         assert f"Stage: one/review-b-{axis}\n" in brief
         assert f'"stage": "one/review-b-{axis}"' in brief
-        assert f"Stage: one/review-b-{axis}\n" in dispatch["args"]
+        assert f"Stage: one/review-b-{axis}\n" in dispatch["args"]["input"]
         assert "long evidence " * 1000 in brief
-        assert len(dispatch["args"]) < 4000
+        assert len(dispatch["args"]["input"]) < 4000
 
 
 @pytest.mark.asyncio
@@ -1304,3 +1304,130 @@ async def test_stage_answer_does_not_replace_other_gates(coding, overrides):
             PolicyAction.ALLOW if state["status"] == "cancelled" else PolicyAction.DENY
         )
         assert coding.state == state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [*STAGES, "explore", "compare-results"])
+async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, stage):
+    await begin(coding)
+    session = coding.store.get_conversation(coding.session_id)
+    state = session.session_state[STATE_KEY]
+    state.update(
+        current=stage if stage in {"explore", "compare-results"} else "one/" + stage,
+        status="ready",
+    )
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+    dispatch = await coding.dispatch()
+    implementation = stage == "implement" or stage.startswith("fix-")
+    assert dispatch["args"]["model"] == ("gpt-6.1-sol" if implementation else "gpt-6-astra")
+    assert dispatch["args"]["reasoning_effort"] == ("high" if implementation else "xhigh")
+    if stage.endswith("-b-standards"):
+        paired = await coding.dispatch()
+        assert paired["args"]["model"] == "gpt-6-astra"
+        assert paired["args"]["reasoning_effort"] == "xhigh"
+    before = coding.state
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    assert coding.state == before
+    assert coding.spec.executor.model == "gpt-6-astra"
+    assert coding.spec.executor.reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
+    from omnigent.workflows.controller import draft_start_message
+
+    args = {
+        "workflow": "compare-review-fix",
+        "repository": "/tmp/repository",
+        "task": "Compare",
+        "baseline": "HEAD",
+        "base": "main",
+        "worker_defaults": {"reasoning_effort": "medium"},
+        "stages": {"explore": {"model": "gpt-6.1-sol", "reasoning_effort": "high"}},
+    }
+    result = await coding.evaluate(
+        EvaluationContext(
+            phase=Phase.TOOL_CALL,
+            tool_name="workflow_draft",
+            content={"name": "workflow_draft", "arguments": args},
+        )
+    )
+    draft = json.loads(draft_start_message(**result.data))
+    await coding.evaluate(output("workflow_draft", draft))
+    saved = coding.state["draft"]
+    # A changed bundle must not alter the approved draft or a running workflow.
+    coding.spec.guardrails.policies[0].function.arguments["worker_defaults"] = {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "low",
+    }
+    coding.spec.guardrails.policies[0].function.arguments["stages"]["review-a"] = {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "low",
+    }
+    await coding.evaluate(_request("/workflow start-draft " + saved["token"]))
+    assert coding.state["definition"] == saved["definition"]
+    dispatch = await coding.dispatch()
+    assert dispatch["args"]["model"] == "gpt-6.1-sol"
+    assert dispatch["args"]["reasoning_effort"] == "high"
+    assert coding.state["definition"]["worker_defaults"] == {
+        "model": "gpt-6-astra",
+        "reasoning_effort": "medium",
+    }
+    assert coding.state["definition"]["stages"]["fix-a"] == {
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "high",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"worker_defaults": []},
+        {"worker_defaults": None},
+        {"worker_defaults": {"model": "--bad"}},
+        {"worker_defaults": {"model": 42}},
+        {"worker_defaults": {"reasoning_effort": "extreme"}},
+        {"worker_defaults": {"reasoning_effort": []}},
+        {"stages": {"review-typo": {"reasoning_effort": "high"}}},
+        {"stages": {"review-a": {"extra": "setting"}}},
+        {"stages": {"implement": None}},
+        {"stages": []},
+    ],
+)
+async def test_invalid_stage_settings_cannot_start_work(coding, settings):
+    await coding.evaluate(output("workflow_status", {}))
+    definition = dict(
+        workflow="compare-review-fix",
+        repository="/tmp/repository",
+        task="Compare",
+        baseline="HEAD",
+        base="main",
+        **settings,
+    )
+    result = await coding.evaluate(_request("/workflow start " + json.dumps(definition)))
+    assert result.action == PolicyAction.DENY
+    assert coding.state.get("status", "idle") == "idle"
+
+
+@pytest.mark.asyncio
+async def test_older_bundle_draft_tool_receives_no_new_arguments(coding):
+    coding.spec.guardrails.policies[0].function.arguments.clear()
+    result = await coding.evaluate(
+        EvaluationContext(
+            phase=Phase.TOOL_CALL,
+            tool_name="workflow_draft",
+            content={
+                "name": "workflow_draft",
+                "arguments": {
+                    "workflow": "implement-review-fix",
+                    "repository": "/tmp/repository",
+                    "task": "Task",
+                    "baseline": "HEAD",
+                    "base": "main",
+                },
+            },
+        )
+    )
+    assert result.action == PolicyAction.ALLOW
+    assert result.data is None
