@@ -1,3 +1,4 @@
+import { CodexModelChoice } from "@/components/composer/CodexModelChoice";
 import { useLoadedConversations } from "@/hooks/useSidebarData";
 import { useComposerContext } from "@/hooks/useComposerContext";
 import { useSlashCompletion } from "@/hooks/useSlashCompletion";
@@ -6818,6 +6819,26 @@ export function NewChatLandingScreen() {
                         triggerClassName="text-[13px] leading-5"
                       />
                     </div>
+                    {selectedNativeHarness === "codex-native" && (
+                      <CodexModelChoice
+                        options={pickerModelOptions}
+                        currentModel={
+                          routingOn
+                            ? null
+                            : pickedModel ||
+                              pickerModelOptions.find((option) => option.isDefault)?.id ||
+                              null
+                        }
+                        disabled={
+                          creating ||
+                          pickerLoading ||
+                          pickerModelsLoading ||
+                          !!pickerModelsError ||
+                          noExecutionTargetSelected
+                        }
+                        onSelect={selectPickerModel}
+                      />
+                    )}
                     <ComposerMicButton
                       className="size-8 md:size-7"
                       enableHotkey

@@ -5456,6 +5456,40 @@ describe("NewChatLandingScreen", () => {
     ).toEqual(["Default", "Full access", "Read only", "Bypass approvals & sandbox"]);
   });
 
+  it("uses the quick Codex model choice for the first message", async () => {
+    const options = [
+      { id: "databricks-gpt-6-1-sol", displayName: "GPT-6.1 Sol", isDefault: true },
+      { id: "databricks-gpt-6-astra", displayName: "GPT-6 Astra" },
+    ];
+    mockModelQueries((harness) =>
+      harness === "codex-native"
+        ? { ...CODEX_MODEL_OPTIONS_RESULT, data: options }
+        : CLAUDE_MODEL_OPTIONS_RESULT,
+    );
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+    renderLanding();
+    expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+    selectAgent("a2");
+    const hi = await screen.findByRole("button", { name: "Hi: GPT-6 Astra" });
+    await waitFor(() => expect(hi).toBeEnabled());
+    fireEvent.click(hi);
+    expect(hi).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Med: GPT-6.1 Sol" }));
+    expect(hi).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(hi);
+    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+      target: { value: "run the build" },
+    });
+    fireEvent.submit(screen.getByTestId("new-chat-landing-composer"));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = authenticatedFetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.model_override).toBe("databricks-gpt-6-astra");
+  });
+
   it("offers the Codex effort ladder in the gear modal and sends the pick as reasoning_effort", async () => {
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
