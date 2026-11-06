@@ -7050,6 +7050,58 @@ describe("Composer config gear", () => {
 
   const gear = () => document.querySelector('[data-testid="composer-config-gear"]');
 
+  describe("quick Codex model choice", () => {
+    const options = [
+      { id: "gpt-6.1-sol", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
+      { id: "gpt-6-astra", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+    ];
+    const props = () =>
+      composerProps({
+        showModels: true,
+        modelPickerKind: "codex",
+        codexModelOptions: options,
+      });
+
+    it("switches directly, waits for confirmation, and resets unsupported effort", async () => {
+      const previous = useChatStore.getState();
+      onTestFinished(() => useChatStore.setState(previous, true));
+      const setModel = vi.fn().mockImplementation(async (model: string) => {
+        useChatStore.setState({ sessionModelOverride: model, pendingModelChange: model });
+      });
+      const setEffort = vi.fn().mockResolvedValue(undefined);
+      useChatStore.setState({
+        llmModel: "gpt-6.1-sol",
+        sessionReasoningEffort: "medium",
+        setModel,
+        setEffort,
+      });
+      renderWithTooltips(<Composer {...props()} />);
+      const med = screen.getByRole("button", { name: "Med: GPT-6.1 Sol" });
+      const hi = screen.getByRole("button", { name: "Hi: GPT-6 Astra" });
+      fireEvent.click(hi);
+      await waitFor(() => expect(setEffort).toHaveBeenCalledWith(null));
+      expect(setModel).toHaveBeenCalledWith("gpt-6-astra", { expectConfirmation: true });
+      expect(med).toHaveAttribute("aria-pressed", "true");
+      expect(hi).toBeDisabled();
+      fireEvent.click(med);
+      expect(setModel).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("composer-agent-menu")).toBeNull();
+      act(() => useChatStore.setState({ llmModel: "gpt-6-astra", pendingModelChange: null }));
+      expect(hi).toHaveAttribute("aria-pressed", "true");
+      expect(hi).toBeEnabled();
+    });
+
+    it.each(["claude", null] as const)("hides for picker kind %s", (modelPickerKind) => {
+      renderWithTooltips(<Composer {...props()} modelPickerKind={modelPickerKind} />);
+      expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+    });
+
+    it("disables changes for read-only sessions", () => {
+      renderWithTooltips(<Composer {...props()} readOnlyReason="Read only" />);
+      expect(screen.getByRole("button", { name: "Hi: GPT-6 Astra" })).toBeDisabled();
+    });
+  });
+
   describe("deferred cycle shortcuts", () => {
     beforeEach(() => {
       const previous = useChatStore.getState();
