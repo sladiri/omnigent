@@ -1,4 +1,4 @@
-"""Flag hardcoded LLM model ids outside tests and owned fallbacks.
+"""Flag hardcoded LLM model ids outside tests, explicit configuration, and owned fallbacks.
 
 Unavoidable static aliases are accepted only inside complete
 ``StaticModelFallback`` records in the central fallback module.
@@ -39,6 +39,8 @@ MODEL_ID_RE = re.compile(
 TEXT_EXTENSIONS = {".json", ".toml", ".yaml", ".yml", ".sh"}
 SOURCE_EXTENSIONS = {".py", *TEXT_EXTENSIONS}
 GENERATED_PATHS = {Path("openapi.json")}
+# This bundle intentionally declares the user's per-role model choices.
+CONFIGURED_MODEL_PATHS = {Path("examples/workflow_controller/config.yaml")}
 SKIP_PARTS = {
     ".git",
     ".mypy_cache",
@@ -213,7 +215,7 @@ def scan(path: Path) -> list[Hit]:
     if (
         not path.is_file()
         or path.suffix not in SOURCE_EXTENSIONS
-        or Path(_repo_relative(path)) in GENERATED_PATHS
+        or Path(_repo_relative(path)) in GENERATED_PATHS | CONFIGURED_MODEL_PATHS
         or any(part in SKIP_PARTS for part in path.parts)
     ):
         return []

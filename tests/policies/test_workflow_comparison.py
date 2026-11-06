@@ -64,7 +64,7 @@ async def report(coding, dispatch, extra):
 
 async def explore(coding, ids=("simple", "alternative")):
     dispatch = await coding.dispatch()
-    assert dispatch["args"].startswith("Stage: explore\n")
+    assert dispatch["args"]["input"].startswith("Stage: explore\n")
     await report(coding, dispatch, design_report(ids))
     assert coding.state["status"] == "waiting-design-selection"
     return dispatch
@@ -232,7 +232,7 @@ async def test_material_revision_cannot_use_answer_or_old_approval(coding):
     await coding.evaluate(_request("/workflow designs 1 all"))
     await prepare(coding)
     dispatch = await coding.dispatch()
-    assert dispatch["args"].startswith("/goal ")  # Existing stage behavior is preserved.
+    assert dispatch["args"]["input"].startswith("/goal ")  # Existing stage behavior is preserved.
     await report(
         coding,
         dispatch,
@@ -264,7 +264,7 @@ async def test_final_comparison_requires_actual_evidence_and_separate_selection(
         await finish(coding)
     assert (await coding.evaluate(_request("/workflow select simple"))).action == PolicyAction.DENY
     dispatch = await coding.dispatch()
-    assert not dispatch["args"].startswith("/goal")
+    assert not dispatch["args"]["input"].startswith("/goal")
     result = {
         "results": [
             {
