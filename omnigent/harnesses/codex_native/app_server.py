@@ -2084,9 +2084,22 @@ class CodexNativeAppServer:
         effective_effort = clamp_codex_effort_for_model(requested_effort, effective_model, catalog)
         if effective_effort and (self.pinned_effort or effective_effort != requested_effort):
             _pin_codex_config_effort(self.codex_home, effective_effort, effective_model)
+        from .memory_collector_prototype import COLLECTOR_ENV, prepare_reader
+
+        reader_instructions = self.developer_instructions
+        if collector_home := self.env.get(COLLECTOR_ENV):
+            reader_instructions = prepare_reader(
+                self.codex_home, Path(collector_home), reader_instructions
+            )
+            self.config_overrides.extend(
+                [
+                    "features.memories=false",
+                    f"sqlite_home={json.dumps(str(self.codex_home.resolve()))}",
+                ]
+            )
         _sync_codex_developer_instructions(
             self.codex_home,
-            self.developer_instructions,
+            reader_instructions,
             use_current_base=compose_profile_instructions,
         )
         self.config_overrides = materialize_codex_provider_config(
