@@ -55,6 +55,11 @@ from omnigent.harnesses.codex_native.launch_args import (
     validate_codex_config_profile_state,
     without_codex_config_profile,
 )
+from omnigent.harnesses.codex_native.memory import (
+    prepare_shared_memory,
+    shared_memory_command,
+    shared_memory_config_overrides,
+)
 from omnigent.harnesses.codex_native.process_registry import (
     CodexNativeProcessOwnerLock,
     acquire_codex_native_process_owner_lock,
@@ -2059,6 +2064,13 @@ class CodexNativeAppServer:
             codex_version=codex_version,
             agent_instructions=self.developer_instructions,
         )
+        if not minimal_config:
+            await asyncio.to_thread(
+                prepare_shared_memory,
+                self.codex_home,
+                config_source,
+                profile=self.config_profile,
+            )
         if self.trust_project:
             _trust_codex_project(self.codex_home, self.cwd)
         # Write the MCP server config into config.toml so the app-server
@@ -2139,8 +2151,17 @@ class CodexNativeAppServer:
         argv = _build_native_codex_app_server_argv(
             tagged_argv0=tagged_argv0,
             listen_url=resolved_listen,
-            config_overrides=self.config_overrides,
+            config_overrides=shared_memory_config_overrides(
+                self.codex_home, self.config_overrides
+            ),
         )
+        launch_argv = shared_memory_command(
+            self.codex_home, [self.codex_path, *argv[1:]], argv0=tagged_argv0
+        )
+        launch_executable = self.codex_path
+        if launch_argv[0] != self.codex_path:
+            argv = launch_argv
+            launch_executable = launch_argv[0]
         proc_env = codex_app_server_diagnostic_env(
             {**self.env, "CODEX_HOME": str(self.codex_home)}
         )
@@ -2153,7 +2174,7 @@ class CodexNativeAppServer:
                 stderr=asyncio.subprocess.PIPE,
                 env=proc_env,
                 cwd=str(self.cwd),
-                executable=self.codex_path,
+                executable=launch_executable,
                 **_proc.spawn_kwargs(),
             )
         except BaseException:

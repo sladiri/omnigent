@@ -268,6 +268,12 @@ def prune_orphaned_bridge_dirs() -> int:
 
 def _codex_orphan_retention_expired(bridge_dir: Path) -> bool:
     """Return whether a dead-owner Codex bridge has been inactive for 7 days."""
+    from omnigent.harnesses.codex_native.memory import SHARED_MEMORY_MARKER
+
+    # Shared thread indexes retain paths into these homes after sessions stop.
+    # shortcut: retain opted-in homes; add archive-aware GC before reclaiming them.
+    if (bridge_dir / "codex-home" / SHARED_MEMORY_MARKER).exists():
+        return False
     activity_cutoff = time.time() - _ORPHAN_RETENTION_SECONDS
     owner_marker = bridge_dir / native_bridge_common.OWNER_PID_FILENAME
     try:
