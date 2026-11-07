@@ -120,3 +120,6 @@ allowBuilds:
   protobufjs: true
   sharp: true
   workerd: true
+
+patchedDependencies:
+  streamdown@2.5.0: patches/streamdown@2.5.0.patch

@@ -74,6 +74,9 @@ overrides:
 
 packageExtensionsChecksum: sha256-pFEExG4o57joHucsVi/dgGpp9BfdxYD7y4blLQUpCqI=
 
+patchedDependencies:
+  streamdown@2.5.0: 7fe32bc360aa19f6bea2d7c7366388b125090af6a7fafc2c2a3e8f9e34603861
+
 importers:
 
   .: {}
@@ -372,7 +375,7 @@ importers:
         version: 2.0.8(@types/react@19.2.17)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       streamdown:
         specifier: ^2.5.0
-        version: 2.5.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@10.2.2)
+        version: 2.5.0(patch_hash=7fe32bc360aa19f6bea2d7c7366388b125090af6a7fafc2c2a3e8f9e34603861)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@10.2.2)
       tailwind-merge:
         specifier: ^3.5.0
         version: 3.6.0
@@ -18966,7 +18969,7 @@ snapshots:
       - utf-8-validate
       - vitest
 
-  streamdown@2.5.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@10.2.2):
+  streamdown@2.5.0(patch_hash=7fe32bc360aa19f6bea2d7c7366388b125090af6a7fafc2c2a3e8f9e34603861)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(supports-color@10.2.2):
     dependencies:
       clsx: 2.1.1
       hast-util-to-jsx-runtime: 2.3.6(supports-color@10.2.2)
