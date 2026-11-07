@@ -247,6 +247,7 @@ def _build_event(ctx: EvaluationContext) -> PolicyEvent:
             "conversation_id": ctx.conversation_id,
             # The conversation's readable title. None when untitled.
             "conversation_title": ctx.conversation_title,
+            "root_conversation_id": ctx.root_conversation_id,
             # RESPONSE phase only: whether this text ends a successful
             # turn. None on other phases and on callers
             # that don't distinguish segments.

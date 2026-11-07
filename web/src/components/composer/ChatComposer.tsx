@@ -46,7 +46,8 @@ export const COMPOSER_TRAY_INSET_CLASS = "mx-3";
 /**
  * Minimum free space (px) the action row keeps between its leading and
  * trailing groups. Once the row is narrower than both groups plus this gap,
- * the controls' text labels collapse to icons instead of wrapping.
+ * the controls' text labels collapse to icons. Cards with workflow buttons
+ * let the action row wrap if the collapsed groups still cannot fit.
  */
 export const COMPOSER_LABELS_MIN_GAP_PX = 24;
 
@@ -85,6 +86,7 @@ interface ChatComposerProps extends Omit<ComponentPropsWithoutRef<"div">, "child
     inputBackdrop?: ReactNode;
     inputHint?: ReactNode;
     attachments?: ReactNode;
+    beforeActions?: ReactNode;
   };
   actions: {
     leading: ReactNode;
@@ -109,7 +111,7 @@ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(functi
       ref={ref}
       data-composer-card
       className={cn(
-        "composer-reference-surface relative flex w-full flex-col rounded-2xl border transition-shadow duration-150 has-[textarea:focus]:shadow-[var(--composer-shadow-focus)] md:min-h-[105px]",
+        "group/composer-card composer-reference-surface relative flex w-full flex-col rounded-2xl border transition-shadow duration-150 has-[textarea:focus]:shadow-[var(--composer-shadow-focus)] md:min-h-[105px]",
         className,
       )}
       {...props}
@@ -124,6 +126,7 @@ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(functi
         {slots?.inputHint}
       </ComposerInputArea>
       {slots?.attachments}
+      {slots?.beforeActions}
       <ComposerActionRow ref={actionRowRef} data-testid={actions.testId}>
         {/* Zero-height width probe: resize-observed instead of the row itself,
             whose height the collapse verdict can change. */}
@@ -412,7 +415,7 @@ export const ComposerActionRow = forwardRef<HTMLDivElement, ComponentPropsWithou
       <div
         ref={ref}
         className={cn(
-          "group/composer-actions @container/composer-actions relative flex min-w-0 flex-nowrap items-center justify-between gap-2 pt-1 pb-2",
+          "group/composer-actions @container/composer-actions relative flex min-w-0 flex-nowrap data-[labels=collapsed]:group-has-[[data-workflow-prompt]]/composer-card:flex-wrap items-center justify-between gap-2 pt-1 pb-2",
           COMPOSER_CONTENT_INSET_CLASS,
           className,
         )}
@@ -431,7 +434,9 @@ export const ComposerActionGroup = forwardRef<
       ref={ref}
       className={cn(
         "flex min-w-0 items-center gap-1",
-        side === "left" ? "flex-none overflow-visible" : "ml-auto max-w-full shrink-0",
+        side === "left"
+          ? "flex-none overflow-visible"
+          : "ml-auto max-w-full shrink-0 group-data-[labels=collapsed]/composer-actions:group-has-[[data-workflow-prompt]]/composer-card:flex-wrap group-data-[labels=collapsed]/composer-actions:group-has-[[data-workflow-prompt]]/composer-card:justify-end",
         className,
       )}
       {...props}

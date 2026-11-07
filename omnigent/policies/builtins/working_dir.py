@@ -1,14 +1,13 @@
 """Built-in working-directory / worktree policy (shell-surface).
 
 A single factory, :func:`block_working_dir_changes`, that gates shell commands
-which move the agent out of its current working directory or switch git
-worktrees. It addresses the "I don't want the agent to switch working
-directories or worktrees" guardrail: an agent confined to a workspace should
-not be able to ``cd`` elsewhere or spin up / relocate a linked worktree and
-operate from there.
+which change directories or manage Git worktrees. With ``allow_sibling_worktrees``
+it permits the stored session checkout,
+registered sibling worktrees of that repository, and ordinary creation of a new
+sibling. Without local metadata or that option it stays strict.
 
-It gates two things, dispatched off ``sys_os_shell`` (the built-in OS shell
-tool) ``command`` strings:
+It inspects supported shell tools' ``command`` / ``cmd`` strings and explicit
+``cwd`` / ``workdir`` arguments:
 
 - **Directory changes** (``block_cd``) — ``cd`` / ``chdir`` / ``pushd`` /
   ``popd`` shell built-ins, plus ``git -C <path> …`` (which runs git as if in
@@ -50,8 +49,10 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
+from omnigent.host.git_worktree import WorktreeError, list_worktrees
 from omnigent.policies.builtins._shell import (
     MAX_SHELL_NESTING,
     SHELL_TOOLS,
@@ -80,7 +81,7 @@ _GIT_VALUE_OPTS: frozenset[str] = frozenset(
 
 # Shell tools whose command string this policy parses, by default: every
 # harness's, so the worktree confinement isn't inert on a native session.
-_DEFAULT_SHELL_TOOLS: frozenset[str] = SHELL_TOOLS
+_DEFAULT_SHELL_TOOLS: frozenset[str] = SHELL_TOOLS | {"exec_command", "shell_command"}
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,63 @@ class _DirOp:
     kind: str
     target: str | None
     detail: str
+    source: str = "."
+
+
+def _session_worktrees(
+    event: PolicyEvent, include_siblings: bool
+) -> tuple[Path | None, tuple[Path, ...]]:
+    """Resolve the trusted session workspace and its registered sibling worktrees."""
+    from omnigent.runtime import get_conversation_store
+
+    session_id = event.get("context", {}).get("conversation_id")
+    if not session_id:
+        return None, ()
+    workspace = None
+    try:
+        session = get_conversation_store().get_conversation(session_id)
+        if not session or not session.workspace or not Path(session.workspace).is_absolute():
+            return None, ()
+        workspace = Path(session.workspace).resolve()
+        if not include_siblings or not workspace.is_dir():
+            return workspace, ()
+        registered = [
+            Path(item.path).resolve() for item in list_worktrees(repo_path=str(workspace))
+        ]
+        root = next((path for path in registered if workspace.is_relative_to(path)), None)
+        return workspace, tuple(path for path in registered if root and path.parent == root.parent)
+    except (WorktreeError, OSError, RuntimeError, ValueError):
+        # Metadata unavailable (including remote runners): keep the strict policy.
+        return workspace, ()
+
+
+def _resolve_literal(path: str | None, cwd: Path | None) -> Path | None:
+    """Resolve literal shell paths; expansion and unknown directories fail closed."""
+    if not path or any(char in path for char in "$`~*?[]{}\x00"):
+        return None
+    try:
+        value = Path(path)
+        return value.resolve() if value.is_absolute() else (cwd / value).resolve() if cwd else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _worktree_add_path(tokens: list[str]) -> str | None:
+    """Accept ordinary worktree creation; uncertain or destructive flags stay gated."""
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {"-b", "--reason"}:
+            i += 2
+        elif token in {"--detach", "-d", "--lock"}:
+            i += 1
+        elif token == "--":
+            return tokens[i + 1] if i + 1 < len(tokens) else None
+        elif token.startswith("-"):
+            return None
+        else:
+            return token
+    return None
 
 
 def _normalize_dir(path: str) -> str:
@@ -163,32 +221,49 @@ def _classify_git(tokens: list[str], block_cd: bool, block_worktree: bool) -> _D
     rest = tokens[1:]
     c_path: str | None = None
     work_tree_path: str | None = None
+    redirected = False
     positionals: list[str] = []
     i = 0
     while i < len(rest):
         token = rest[i]
         if token.startswith("--work-tree="):
+            redirected = True
             work_tree_path = token.split("=", 1)[1]
             i += 1
             continue
         if token in _GIT_VALUE_OPTS and i + 1 < len(rest):
             if token == "-C":
-                c_path = rest[i + 1]
-            elif token == "--work-tree":
-                work_tree_path = rest[i + 1]
+                c_path = os.path.join(c_path or "", rest[i + 1])
+            else:
+                redirected = True
+                if token == "--work-tree":
+                    work_tree_path = rest[i + 1]
             i += 2
             continue
         if token.startswith("-"):
+            if token.startswith("-C"):
+                c_path = os.path.join(c_path or "", token[2:])
+            else:
+                redirected = True
             i += 1
             continue
-        positionals.append(token)
-        i += 1
+        positionals.extend(rest[i:])
+        break
 
     subcmd = positionals[0] if positionals else None
     if block_worktree and subcmd == "worktree":
         action_word = positionals[1] if len(positionals) > 1 else ""
         if action_word in _WORKTREE_SWITCH_SUBCMDS:
+            if action_word == "add" and not redirected:
+                return _DirOp(
+                    "worktree-add",
+                    _worktree_add_path(positionals[2:]),
+                    "git worktree add",
+                    c_path or ".",
+                )
             return _DirOp(kind="worktree", target=None, detail=f"git worktree {action_word}")
+    if block_cd and c_path is not None and work_tree_path is not None:
+        return _DirOp(kind="cd", target=None, detail="git -C with --work-tree")
     if block_cd and c_path is not None:
         return _DirOp(kind="cd", target=c_path, detail=f"git -C {c_path}")
     if block_cd and work_tree_path is not None:
@@ -264,6 +339,7 @@ def block_working_dir_changes(
     block_cd: bool = True,
     block_worktree: bool = True,
     allowed_dirs: list[str] | None = None,
+    allow_sibling_worktrees: bool = False,
     action: str = "deny",
     shell_tools: list[str] | None = None,
 ) -> Callable[[PolicyEvent], PolicyResponse | None]:
@@ -276,8 +352,11 @@ def block_working_dir_changes(
         Defaults to ``True``.
     :param allowed_dirs: Directories a ``cd`` / ``git -C`` may move into (the
         directory itself or a subdirectory is allowed), as paths e.g.
-        ``["/workspace"]``. ``None`` / empty means no directory change is
-        allowed (every gated ``cd`` fails). Does not affect worktree gating.
+        ``["/workspace"]``. These are additional to the session worktrees when
+        ``allow_sibling_worktrees`` is enabled. Does not affect worktree gating.
+    :param allow_sibling_worktrees: Allow the trusted session checkout and
+        registered sibling worktrees, plus ordinary creation of a new sibling.
+        Requires locally accessible Git metadata. Defaults to ``False``.
     :param action: What a gated command yields — ``"deny"`` (block it) or
         ``"ask"`` (park for human approval). Defaults to ``"deny"``.
     :param shell_tools: Names of the shell tools whose ``command`` argument is
@@ -315,7 +394,7 @@ def block_working_dir_changes(
         """
         return {"result": result_kind, "reason": reason}
 
-    def _gate(op: _DirOp) -> PolicyResponse | None:
+    def _gate(op: _DirOp, cwd: Path | None, roots: tuple[Path, ...]) -> PolicyResponse | None:
         """
         Apply the policy to one parsed :class:`_DirOp`.
 
@@ -323,15 +402,37 @@ def block_working_dir_changes(
         :returns: ``None`` to allow (a ``cd`` into an allowed dir), or a
             :class:`PolicyResponse` carrying the configured action.
         """
-        if op.kind == "worktree":
+        target = _resolve_literal(op.target, cwd)
+        if op.kind == "worktree-add" and roots:
+            source = _resolve_literal(op.source, cwd)
+            destination = _resolve_literal(op.target, source)
+            if (
+                source
+                and any(source.is_relative_to(root) for root in roots)
+                and destination
+                and destination.parent == roots[0].parent
+                and not destination.exists()
+                and not destination.is_symlink()
+            ):
+                try:
+                    if any(
+                        Path(item.path).resolve() in roots
+                        for item in list_worktrees(repo_path=str(source))
+                    ):
+                        return None
+                except (WorktreeError, OSError, RuntimeError, ValueError):
+                    pass
+        if op.kind.startswith("worktree"):
             return _violation(
                 f"Blocked: '{op.detail}' switches git worktrees, which this policy forbids."
             )
-        # op.kind == "cd"
+        if target and any(target.is_relative_to(root) for root in roots):
+            return None
         if (
             normalized_allowed
             and op.target is not None
-            and _is_under_allowed(op.target, normalized_allowed)
+            and not any(char in op.target for char in "$`~*?[]{}\x00")
+            and _is_under_allowed(str(target) if target else op.target, normalized_allowed)
         ):
             return None
         if normalized_allowed:
@@ -343,7 +444,9 @@ def block_working_dir_changes(
             f"Blocked: '{op.detail}' changes the working directory, which this policy forbids."
         )
 
-    def _evaluate_command(command: str, _depth: int = 0) -> PolicyResponse | None:
+    def _evaluate_command(
+        command: str, cwd: Path | None, roots: tuple[Path, ...], _depth: int = 0
+    ) -> PolicyResponse | None:
         """
         Evaluate a shell command string for gated dir/worktree switches.
 
@@ -401,11 +504,16 @@ def block_working_dir_changes(
                 continue
             inner = unwrap_shell_command(tokens)
             if inner is not None:
-                worst = _worse(worst, _evaluate_command(inner, _depth + 1))
+                worst = _worse(worst, _evaluate_command(inner, cwd, roots, _depth + 1))
+                # eval and sourced wrappers may change the outer shell directory.
+                cwd = None
                 continue
             op = _classify_segment(tokens, block_cd, block_worktree)
             if op is not None:
-                worst = _worse(worst, _gate(op))
+                worst = _worse(worst, _gate(op, cwd, roots))
+                if tokens[0].lstrip("(") in _CD_COMMANDS:
+                    # Chains/conditionals can leave multiple possible directories.
+                    cwd = None
         return worst
 
     def _evaluate(event: PolicyEvent) -> PolicyResponse | None:
@@ -428,10 +536,23 @@ def block_working_dir_changes(
             return None
         args = data.get("arguments")
         args = args if isinstance(args, dict) else {}
-        command = args.get("command")
+        command = args.get("command", args.get("cmd"))
         if not isinstance(command, str) or not command.strip():
             return None
-        return _evaluate_command(command)
+        workspace, roots = _session_worktrees(event, allow_sibling_worktrees)
+        cwd_arg = args.get("workdir", args.get("cwd"))
+        cwd = _resolve_literal(cwd_arg, workspace) if isinstance(cwd_arg, str) else workspace
+        if block_cd and cwd_arg is not None:
+            if not isinstance(cwd_arg, str) or cwd is None:
+                return _violation("Blocked: cannot resolve the shell workdir.")
+            if cwd != workspace:
+                verdict = _gate(_DirOp("cd", str(cwd), "shell workdir"), workspace, roots)
+                if verdict:
+                    return verdict
+        # Git environment overrides can select a different repository.
+        if re.search(r"\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|CONFIG\w*)=", command):
+            roots = ()
+        return _evaluate_command(command, cwd, roots)
 
     return _evaluate
 
@@ -464,7 +585,8 @@ POLICY_REGISTRY: list[dict[str, Any]] = [  # type: ignore[explicit-any]
             "(cd / chdir / pushd / popd, "
             "git -C) or git worktrees (git worktree add / move / remove). "
             "Supports Omnigent, Claude/Codex, Cursor, Pi, Hermes, and Goose "
-            "shell tools. Optionally allow cd into specific directories via allowed_dirs. "
+            "shell tools. Enable allow_sibling_worktrees to allow same-repository siblings "
+            "using local Git metadata. Additional directories can use allowed_dirs. "
             "Chained, wrapped (bash -c), and env-prefixed commands are parsed "
             "so the gate cannot be trivially bypassed."
         ),
@@ -485,7 +607,13 @@ POLICY_REGISTRY: list[dict[str, Any]] = [  # type: ignore[explicit-any]
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Directories a cd / git -C may move into "
-                    "(the dir or a subdirectory). Empty = no change allowed.",
+                    "(the dir or a subdirectory), in addition to permitted session worktrees.",
+                },
+                "allow_sibling_worktrees": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Allow the session checkout, registered sibling worktrees, "
+                    "and creation of a new sibling using local Git metadata.",
                 },
                 "action": {
                     "type": "string",

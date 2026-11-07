@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
 
@@ -61,7 +62,7 @@ _logger = logging.getLogger(__name__)
 # so subprocess invocations don't depend on cwd.
 _RUNNER_PATH = str(Path(__file__).parent / "_runner.py")
 
-# Maximum bytes to read from the fd 3 response pipe (1 MiB).
+# Maximum accepted response from the fd 3 pipe (1 MiB).
 _MAX_RESPONSE_BYTES = 1024 * 1024
 
 # Prefix used by the runner in Docker/stdout mode.
@@ -288,8 +289,20 @@ class LocalPythonTool(Tool):
             os.close(write_fd)
             write_fd = -1
             try:
-                _stdout, stderr = proc.communicate(input=request)
-                return _read_fd3_response(read_fd, proc.returncode, stderr)
+                # Drain independently of the runner's shared executor, which may
+                # already be occupied by concurrent tool invocations.
+                with ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="tool-response"
+                ) as reader:
+                    response = reader.submit(_drain_response_pipe, read_fd)
+                    try:
+                        _stdout, stderr = proc.communicate(input=request)
+                        raw = response.result()
+                    except BaseException:
+                        proc.kill()
+                        proc.communicate()
+                        raise
+                return _parse_fd3_response(raw, proc.returncode, stderr)
             finally:
                 with self._procs_lock:
                     self._live_procs.discard(proc)
@@ -541,20 +554,30 @@ def _write_srt_settings_file(state_root: str) -> str:
     return path
 
 
-def _read_fd3_response(
-    read_fd: int,
+def _drain_response_pipe(read_fd: int) -> bytes:
+    """Retain a bounded response, draining excess bytes so the child can exit."""
+    with os.fdopen(read_fd, "rb", closefd=False) as pipe:
+        raw = pipe.read(_MAX_RESPONSE_BYTES + 1)
+        while pipe.read(64 * 1024):
+            pass
+    return raw
+
+
+def _parse_fd3_response(
+    raw: bytes,
     returncode: int,
     stderr: bytes,
 ) -> str:
     """
-    Read and parse the JSON response from the fd 3 pipe.
+    Parse the JSON response from the fd 3 pipe.
 
-    :param read_fd: The read end of the fd 3 pipe.
+    :param raw: Captured response bytes.
     :param returncode: The subprocess exit code.
     :param stderr: Captured stderr bytes for error reporting.
     :returns: The tool's result string, or an error string.
     """
-    raw = os.read(read_fd, _MAX_RESPONSE_BYTES)
+    if len(raw) > _MAX_RESPONSE_BYTES:
+        return f"Error: tool response exceeds {_MAX_RESPONSE_BYTES}-byte limit"
     if not raw:
         stderr_text = stderr.decode(errors="replace").strip()
         if returncode != 0:

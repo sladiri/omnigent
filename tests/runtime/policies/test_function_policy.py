@@ -110,6 +110,7 @@ def _build_engine(
     *,
     initial_labels: dict[str, str] | None = None,
     conversation_title: str | None = None,
+    root_conversation_id: str | None = None,
 ) -> PolicyEngine:
     """Build a PolicyEngine + fresh conversation for tests."""
     conv = store.create_conversation()
@@ -121,6 +122,7 @@ def _build_engine(
         conversation_title=conversation_title,
         initial_labels=initial_labels or {},
         conversation_store=store,
+        root_conversation_id=root_conversation_id,
     )
 
 
@@ -1418,3 +1420,25 @@ async def test_engine_conversation_title_none_when_untitled(
     engine = _build_engine(conversation_store, [policy])
     await engine.evaluate(EvaluationContext(phase=Phase.REQUEST, content="hi"))
     assert captured["conversation_title"] is None
+
+
+@pytest.mark.asyncio
+async def test_engine_exposes_trusted_root_for_inherited_policy_scope(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    captured = []
+
+    def fn(event: dict) -> PolicyResult:
+        captured.append(event["context"].get("root_conversation_id"))
+        return PolicyResult(action=PolicyAction.ALLOW)
+
+    engine = _build_engine(conversation_store, [FunctionPolicy(_spec(), fn)])
+    await engine.evaluate(EvaluationContext(phase=Phase.REQUEST, content="root"))
+    assert captured == [engine.conversation_id]
+    child_engine = _build_engine(
+        conversation_store, [FunctionPolicy(_spec(), fn)], root_conversation_id="verified-parent"
+    )
+    await child_engine.evaluate(
+        EvaluationContext(phase=Phase.REQUEST, content="child", root_conversation_id="forged")
+    )
+    assert captured[-1] == "verified-parent"

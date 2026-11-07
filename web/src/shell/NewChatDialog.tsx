@@ -1,3 +1,4 @@
+import { CodexModelChoice } from "@/components/composer/CodexModelChoice";
 import { useLoadedConversations } from "@/hooks/useSidebarData";
 import { useComposerContext } from "@/hooks/useComposerContext";
 import { useSlashCompletion } from "@/hooks/useSlashCompletion";
@@ -30,6 +31,7 @@ import {
   ComposerMenuTooltip,
 } from "@/components/composer/ComposerControls";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { WorkflowPromptButtons } from "@/components/composer/WorkflowPromptButtons";
 import {
   COMPOSER_HARNESS_MENU_SIZE,
   HarnessMenuNavigationLabel,
@@ -84,6 +86,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import { Spinner } from "@/components/ui/spinner";
 import { LaptopDbcertBanner } from "@/components/DbcertBanner";
 import { iconForAgent } from "@/components/AgentCard";
@@ -1358,10 +1361,13 @@ export function AgentHarnessPicker({
   ]
     .filter(Boolean)
     .join(", ");
+  const agentModelText =
+    visibleModelText && agentEntries.some((agent) => agent.id === effectiveAgentId)
+      ? `${agentLabel} · ${visibleModelText}`
+      : visibleModelText;
   const triggerText = triggerSdk
     ? agentLabel
-    : visibleModelText ||
-      (triggerModel === undefined ? (hasAgents ? agentLabel : "No agents") : "");
+    : agentModelText || (triggerModel === undefined ? (hasAgents ? agentLabel : "No agents") : "");
   const triggerSecondaryText = triggerSdk
     ? compactModelTriggerLabel(triggerSdk.value)
     : visibleEffortText;
@@ -2289,7 +2295,9 @@ export function NewChatLandingScreen() {
           // the other visit's workspace — drop the marker with it so the
           // seed/retract machinery starts clean for this visit.
           autoSeededBranch: "",
+          costControlMode: null,
         };
+  const projectDraftMismatch = landingDraft !== null && landingDraft.project !== projectParam;
 
   const [message, setMessage] = useState<string>(() =>
     linkedPrompt?.trim() ? linkedPrompt : (restoredDraft?.message ?? ""),
@@ -2582,7 +2590,9 @@ export function NewChatLandingScreen() {
   const [pickedHarness, setPickedHarness] = useState<string | null>(
     () =>
       restoredDraft?.pickedHarness ??
-      readLastHarness(restoredDraft?.pickedAgentId ?? readLastAgentId()),
+      (projectDraftMismatch
+        ? null
+        : readLastHarness(restoredDraft?.pickedAgentId ?? readLastAgentId())),
   );
   // Per-session model + reasoning effort for the claude-native model picker.
   // "" = unselected: nothing is checked and `model_override` / `reasoning_effort`
@@ -4793,7 +4803,9 @@ export function NewChatLandingScreen() {
         setPickedHarness(
           writes.agentId === projectLaunch?.agentId && projectLaunch.pickedHarness !== undefined
             ? projectLaunch.pickedHarness
-            : readLastHarness(writes.agentId),
+            : projectDraftMismatch
+              ? null
+              : readLastHarness(writes.agentId),
         );
         // Config-sourced seed into an empty slot (as opposed to the last-agent
         // fallback): the create omits the field until any other write flips this.
@@ -4823,6 +4835,7 @@ export function NewChatLandingScreen() {
     pickedAgentId,
     prefillConfig,
     projectLaunch,
+    projectDraftMismatch,
     defaultSandboxProvider,
   ]);
 
@@ -5591,7 +5604,7 @@ export function NewChatLandingScreen() {
     }
   }
 
-  async function handleCreate() {
+  async function handleCreate(effortOverride?: string) {
     // Mirror the Send button's disabled condition (canSubmit) so the Enter-key
     // and form-submit paths that call this directly can't create a session with
     // a blank message, host, agent, or workspace.
@@ -5758,10 +5771,13 @@ export function NewChatLandingScreen() {
         (sandboxDefaultModelsEnabled ||
           agentSupportsPermissionMode ||
           selectedNativeHarness === "pi-native" ||
-          nativeAgent?.harness === "codex-native" ||
+          (nativeAgent?.harness === "codex-native" &&
+            pickerEffortOptions.some(
+              (option) => option.value === (effortOverride ?? pickedEffort),
+            )) ||
           nativeAgent?.harness === "devin-native") &&
-        pickedEffort
-          ? pickedEffort
+        (effortOverride ?? pickedEffort)
+          ? (effortOverride ?? pickedEffort)
           : null;
       // Resolved default (shown when nothing is pinned): the catalog's default
       // row's provider-facing model id, else its row id.
@@ -6855,6 +6871,17 @@ export function NewChatLandingScreen() {
                 "data-testid": "new-chat-landing-input",
               }}
               slots={{
+                beforeActions: (
+                  <WorkflowPromptButtons
+                    agentName={selectedAgent?.name}
+                    disabled={creating}
+                    draft={message}
+                    onChange={(text) => {
+                      setMessage(text);
+                      textareaRef.current?.focus();
+                    }}
+                  />
+                ),
                 beforeInput: (
                   <>
                     {/* Skill suggestions — floats above the composer box. */}
@@ -7341,6 +7368,26 @@ export function NewChatLandingScreen() {
                         triggerClassName="text-[13px] leading-5"
                       />
                     </div>
+                    {selectedNativeHarness === "codex-native" && (
+                      <CodexModelChoice
+                        options={pickerModelOptions}
+                        currentModel={
+                          routingOn
+                            ? null
+                            : pickedModel ||
+                              pickerModelOptions.find((option) => option.isDefault)?.id ||
+                              null
+                        }
+                        disabled={
+                          creating ||
+                          pickerLoading ||
+                          pickerModelsLoading ||
+                          !!pickerModelsError ||
+                          noExecutionTargetSelected
+                        }
+                        onSelect={selectPickerModel}
+                      />
+                    )}
                     <ComposerMicButton
                       className="size-8 md:size-7"
                       enableHotkey
@@ -7352,6 +7399,16 @@ export function NewChatLandingScreen() {
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
                     />
+
+                    {!smartRoutingHarnessSelected &&
+                      !(smartRoutingEligible && costControlMode === "on") &&
+                      (supportsPermissionMode || selectedNativeHarness === "codex-native") && (
+                        <EffortSubmitButtons
+                          levels={pickerEffortOptions.map((option) => option.value)}
+                          disabled={!canSubmit}
+                          onSubmit={(effort) => void handleCreate(effort)}
+                        />
+                      )}
                     <TooltipProvider>
                       <Tooltip
                         open={submitTooltipState !== "closed"}

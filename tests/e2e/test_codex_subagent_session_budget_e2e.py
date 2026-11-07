@@ -27,6 +27,7 @@ import httpx
 import pytest
 import yaml
 
+from tests._helpers.operator_agents import operator_agent_store
 from tests._helpers.server_runner import server_runner
 from tests.e2e.conftest import (
     configure_mock_llm,
@@ -106,6 +107,7 @@ def codex_budget_rig(
             poll_interval=0.5,
             wait_ready=False,
         ) as stack,
+        operator_agent_store(stack.base_url, stack.database_uri, stack.artifact_location),
         httpx.Client(
             base_url=stack.base_url,
             timeout=15,

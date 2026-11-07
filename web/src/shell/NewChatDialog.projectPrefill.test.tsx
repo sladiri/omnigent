@@ -360,7 +360,45 @@ afterEach(() => {
 });
 
 describe("NewChatLandingScreen project prefill", () => {
+  it("applies project defaults after restoring an unfiled draft", async () => {
+    searchParams = new URLSearchParams();
+    setProjectConfig({});
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("foo"),
+    );
+    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+      target: { value: "keep this draft" },
+    });
+    const file = new File(["data"], "draft.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("new-chat-landing-file-input"), {
+      target: { files: [file] },
+    });
+
+    cleanup();
+    searchParams = new URLSearchParams("project=Alpha");
+    vi.mocked(useHosts).mockReturnValue({
+      data: [host(), host({ host_id: "host_2", name: "build-box" })],
+    } as ReturnType<typeof useHosts>);
+    setProjectConfig({ host_id: "host_2", workspace: REPO, agent_id: "ag_other" });
+    renderLanding();
+
+    expect((screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement).value).toBe(
+      "keep this draft",
+    );
+    expect(screen.getByText("draft.txt")).toBeTruthy();
+    const body = await submitAndReadBody();
+    expect(body.host_id).toBe("host_2");
+    expect(body.project_id).toBe("proj_alpha");
+    expect("workspace" in body).toBe(false);
+    expect("agent_id" in body).toBe(false);
+  });
+
   it("discards project A's parked draft slots so project B's remount seeds B's defaults", async () => {
+    localStorage.setItem(
+      "omnigent:last-harness-by-agent",
+      JSON.stringify({ ag_hello: "codex-native" }),
+    );
     const BETA_REPO = "/Users/corey/projects/beta";
     // Distinct stored defaults per project: Alpha pins ag_other + its repo,
     // Beta pins ag_hello + a different repo.
@@ -395,6 +433,7 @@ describe("NewChatLandingScreen project prefill", () => {
     // agent survived, it would differ from Beta's config and be sent
     // explicitly — the omission is the assertion.
     expect(body.project_id).toBe("proj_beta");
+    expect(body.harness_override).toBeUndefined();
     expect("agent_id" in body).toBe(false);
     expect("workspace" in body).toBe(false);
   });

@@ -87,7 +87,8 @@ def test_scheduled_tasks_columns(db_engine: Engine) -> None:
         assert columns[name]["nullable"] is (name != "created_at")
     assert columns["session_mode"]["nullable"] is False
     assert columns["session_id"]["nullable"] is True
-    cols = set(columns)
+    # Historical hook-review state exists only in migrated databases.
+    cols = set(columns) - {"requires_hook_review"}
     assert cols == {
         "workspace_id",
         "id",

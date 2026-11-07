@@ -933,7 +933,11 @@ class PolicyEngine:
         :returns: A new :class:`EvaluationContext` with
             ``conversation_id`` set to this engine's conversation_id.
         """
-        return replace(ctx, conversation_id=self._conversation_id)
+        return replace(
+            ctx,
+            conversation_id=self._conversation_id,
+            root_conversation_id=self._root_conversation_id,
+        )
 
     def _inject_conversation_title(self, ctx: EvaluationContext) -> EvaluationContext:
         """

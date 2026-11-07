@@ -207,6 +207,8 @@ class EventContext(TypedDict, total=False):
     :param conversation_title: The conversation's readable title
         (``Conversation.title``). ``None`` when the conversation has no
         title yet. Read via ``event["context"]["conversation_title"]``.
+    :param root_conversation_id: Verified root of the session tree. Inherited
+        policies compare it with conversation_id to distinguish workers.
     :param turn_final: On ``RESPONSE``, the runner relay sets ``True`` for
         the final text segment of a successful turn and ``False`` for
         intermediate segments or failed, cancelled, and incomplete turns.
@@ -233,6 +235,7 @@ class EventContext(TypedDict, total=False):
     # ``str | None``: the value is ``ctx.conversation_title``, ``None`` when
     # the conversation has no title yet.
     conversation_title: str | None
+    root_conversation_id: str | None
     # RESPONSE policies skip only explicit False for completion actions;
     # None preserves callers that do not distinguish segments.
     turn_final: bool | None
@@ -286,7 +289,11 @@ class PolicyEvent(TypedDict, total=False):
         constructing their own client.
     :param request_data: On ``tool_result`` phase only — the
         original tool-call payload so the policy can correlate
-        request and response.
+        request and response. Delayed child results use
+        ``name=sys_session_send``, ``args={agent, title, conversation_id}``,
+        and ``subagent={status, work_id}``. Status is ``completed``, ``failed``,
+        or ``cancelled``; ``work_id`` identifies a delivery (legacy payloads
+        may omit it). Recovered deliveries can repeat, so consumers must deduplicate.
     """
 
     type: Literal[

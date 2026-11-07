@@ -55,6 +55,13 @@ apply only to that side chat. See the [side-chat settings recipe](sessions.md).
   Equivalent model-ID spellings use the catalog's display name consistently,
   including case, gateway-prefix, and version-punctuation differences; context
   variants keep their own labels and checked rows, including in side chats.
+- `custom-agent-selection`: choosing a custom agent shows its name beside the
+  model in the new-session pill; the choice survives reload and binds the new session.
+- `workflow-prompts`: implement, compare, and review appear only for workflow-controller
+  in a separate row in both composers, with visible names and the selected controller
+  identified. Each inserts the workflow prompt before the draft without sending.
+- `workflow-start`: existing controller sessions show a saved draft with a Start workflow
+  action. Review its details before approval; editing the message disables Start.
 - `effort-picker`: reasoning effort for harnesses that support it (Codex, Claude,
   Pi, Devin). States: available, unavailable placeholder, max/ultra levels, refused
   change (the pill keeps the applied level).
@@ -338,6 +345,9 @@ apply only to that side chat. See the [side-chat settings recipe](sessions.md).
 - Open a project's actions menu in the sidebar → **Project settings**, pick
   Claude Code, Codex, or Pi as the agent, then set **Model** and **Effort**.
   Click **New session in project** and check the pill shows both.
+- Open Agents → Other… and select a custom agent. Its name appears beside the
+  model; reopen the picker to confirm the selected row. For Workflow-controller,
+  click implement, compare, or review to insert a workflow prompt, add your task, then send.
 - Attach files or type `/` before the first send.
 - For a managed sandbox, submit a prompt and close the browser once the session
   URL appears, while provisioning is still in progress. Reopen that URL after
@@ -491,6 +501,16 @@ Other connection providers alone do not enable the managed MCP picker.
   `tests/e2e_ui/start_session/test_codex_catalog_availability.py::test_codex_prelaunch_label_reflects_catalog_availability`
   (desktop and mobile; populated catalogs without a default, empty catalogs, and probe failures),
   `tests/e2e_ui/start_session/test_composer_transition.py::test_selected_model_survives_delayed_create`
+- **`custom-agent-selection`, new-session composer (landing or project, desktop and mobile):**
+  covered by `web/src/shell/NewChatDialog.test.tsx`. Manually select a custom
+  agent on the same harness/model as the current choice, confirm its name in
+  the pill (in the picker on narrow screens), reload, then send a message and
+  confirm the new session uses that agent.
+- **`workflow-prompts`, both composers (desktop and mobile):**
+  `web/src/shell/NewChatDialog.test.tsx` and
+  `web/src/pages/ChatPage.composer.test.tsx` cover visibility and draft handling.
+  Select Workflow-controller and click each button. Expect its prompt before
+  your draft, with no send. Choose another agent and expect the buttons to hide.
 - **`effort-picker`, new-session composer:**
   `tests/e2e_ui/start_session/test_codex_effort_prelaunch.py::test_new_codex_session_gear_offers_reasoning_effort`
 - **`project-session-defaults`:**
@@ -783,6 +803,13 @@ Other connection providers alone do not enable the managed MCP picker.
   server agent keeps the dialog open with the server's reason.
 - **`mobile-labels`, new-session composer:**
   `tests/e2e_ui/mobile/test_composer_model_label_stop_overlap.py::test_new_session_composer_collapses_labels_to_icons_on_mobile`
+
+- **`workflow-start`, existing session (desktop and mobile):**
+  `tests/browser_ui/chat/test_workflow_start.py` checks draft details, edit protection,
+  reload, and token submission in the built SPA with a mocked backend. The isolated
+  server check `tests/e2e/test_workflow_controller_e2e.py::test_prepared_draft_endpoint_and_approval_survive_restart`
+  verifies durable drafts, stale approvals, and policy gates. New-session composers
+  have no saved draft; send the task first, then approve in the created session.
 
 ## Gotchas
 

@@ -330,6 +330,13 @@ def _build_sys_session_send_schema(
                 "type": "object",
                 "properties": {
                     **named_mode_properties,
+                    "workspace": {
+                        "type": "string",
+                        "description": (
+                            "Absolute working directory for a newly created named child. "
+                            "Omit when continuing an existing child or using session_id."
+                        ),
+                    },
                     "session_id": {
                         "type": "string",
                         "description": (

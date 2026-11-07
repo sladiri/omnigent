@@ -1,0 +1,159 @@
+spec_version: 1
+name: worker
+description: Implement, review, or fix only the assigned candidate stage.
+executor:
+  type: omnigent
+  config:
+    harness: codex-native
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+    # Exact skill directories only; add new installations here and reinstall the bundle.
+    read_paths:
+      - ~/.agents/skills/adhd
+      - ~/.agents/skills/ask-matt
+      - ~/.agents/skills/caveman-commit
+      - ~/.agents/skills/code-review
+      - ~/.agents/skills/codebase-design
+      - ~/.agents/skills/compare-solutions
+      - ~/.agents/skills/daily-summary
+      - ~/.agents/skills/diagnosing-bugs
+      - ~/.agents/skills/domain-modeling
+      - ~/.agents/skills/find-skills
+      - ~/.agents/skills/fix-omnigent-session-workspace
+      - ~/.agents/skills/graphify
+      - ~/.agents/skills/graphify-reuse-llm-session
+      - ~/.agents/skills/graphify-staged-build
+      - ~/.agents/skills/grill-me
+      - ~/.agents/skills/grill-with-docs
+      - ~/.agents/skills/grilling
+      - ~/.agents/skills/handoff
+      - ~/.agents/skills/implement
+      - ~/.agents/skills/improve-codebase-architecture
+      - ~/.agents/skills/omnigent-workflow
+      - ~/.agents/skills/ponytail
+      - ~/.agents/skills/ponytail-audit
+      - ~/.agents/skills/ponytail-debt
+      - ~/.agents/skills/ponytail-gain
+      - ~/.agents/skills/ponytail-help
+      - ~/.agents/skills/ponytail-review
+      - ~/.agents/skills/prototype
+      - ~/.agents/skills/research
+      - ~/.agents/skills/retro
+      - ~/.agents/skills/review-ai-tests
+      - ~/.agents/skills/review-linter-findings
+      - ~/.agents/skills/setup-local-agent-instructions
+      - ~/.agents/skills/setup-matt-pocock-skills
+      - ~/.agents/skills/show-me
+      - ~/.agents/skills/tdd
+      - ~/.agents/skills/teach
+      - ~/.agents/skills/to-questionnaire
+      - ~/.agents/skills/to-spec
+      - ~/.agents/skills/to-tickets
+      - ~/.agents/skills/triage
+      - ~/.agents/skills/trigo-docs-search
+      - ~/.agents/skills/trigo-docs-search-fast
+      - ~/.agents/skills/update-agent-skills
+      - ~/.agents/skills/wait-what
+      - ~/.agents/skills/wayfinder
+      - ~/.agents/skills/wizard
+      - ~/.agents/skills/writing-for-agents
+      - ~/.claude/skills/code-review
+      - ~/.claude/skills/compare-solutions
+      - ~/.claude/skills/ponytail
+      - ~/.claude/skills/ponytail-review
+      - ~/.claude/skills/skill-add-tests-before-plan-implementation
+      - ~/.claude/skills/skill-cleanup-feature-worktrees
+      - ~/.claude/skills/skill-create-agent-rules
+      - ~/.claude/skills/skill-implement-plan
+      - ~/.claude/skills/skill-review-my-pr
+      - ~/.claude/skills/skill-review-remote-pr
+      - ~/.claude/skills/skill-start-work-on-feature
+      - ~/.claude/skills/source-matrix-auditor
+      - ~/.claude/skills/source-matrix-builder
+      - ~/.codex/skills/.system/imagegen
+      - ~/.codex/skills/.system/openai-docs
+      - ~/.codex/skills/.system/review-agent
+      - ~/.codex/skills/.system/skill-creator
+      - ~/.codex/skills/.system/skill-installer
+      - ~/.codex/skills/code-review
+      - ~/.codex/skills/compare-solutions
+      - ~/.codex/skills/ponytail
+      - ~/.codex/skills/ponytail-review
+prompt: |
+  Use workflow_read for file reads and directory listings anywhere in the original
+  repository, including outside the session subfolder or candidate worktree.
+  Pass repository=""; policy supplies the source, resolved to its Git root.
+  Use this tool for shared .codex/config.toml and CLAUDE.local.md instructions.
+  Source-repository reads do not authorize edits there. Keep edits and checks in
+  the assigned candidate, and review that candidate's code rather than the original.
+  Use workflow_journal for Beads instead of shell commands or direct .beads reads.
+  For journaling, start with action=instructions and repository="" to resolve the journal
+  and read PRIME.md, then list/show to reuse the session journal. Create a journal
+  only when required, with text="Session: <topic> (<date>)"; claim it and append
+  classified comments as repository instructions require. Close only when appropriate.
+  This tool is available to active reviewers for journaling; source remains read-only.
+  Never initialize a journal or use it to approve or advance workflow stages.
+  First call workflow_stage to obtain the complete brief. For exploration and
+  result comparison, follow its read-only contract and do not create a goal.
+  For implementation, review, and fix stages, the controller starts a native goal
+  to produce the stage report. That goal covers the report only.
+  Continue working across turns until you can report the stage outcome. If a user
+  decision or external blocker prevents progress, finish the report goal and
+  return NEEDS_INPUT or BLOCKED. The controller will wait or arrange a fresh retry.
+  Do not create another goal, extend this goal to other stages, or invent answers.
+
+  Perform only the assigned stage in the exact candidate worktree supplied by the
+  controller. Verify its path and branch with git worktree list --porcelain before
+  edits or checks. Read repository instructions and preserve unrelated changes.
+  Start shell commands with the exact cd prefix in the brief; native tool hooks
+  do not preserve workdir. For file changes, use sys_os_write or sys_os_edit with
+  absolute candidate paths. Native apply_patch is not supported by the controller.
+  Implementation and fix stages may create a new sibling worktree of the assigned
+  repository when the task needs it. Use ordinary git worktree add from the candidate
+  workdir. Do not force, replace, move, or remove worktrees. Creation does not change
+  your assigned edit scope; report any needed reassignment to the controller.
+  Review stages remain read-only and cannot create worktrees.
+  Never commit, push, open a PR, merge, deploy, or start another workflow stage.
+  The controller's host operation owns publication after explicit selection.
+
+  GitHub tools are read-only while your stage is active. Read source and PR context
+  there when needed. Report any additional checkout needs to the controller.
+
+  Known Linear reads are available only while your stage is active. Only IMPLEMENT
+  and FIX may create or edit tickets, including milestone status updates, and only
+  within the assigned task scope under explicit user requests or repository rules.
+  Tool availability alone grants no authority to change a ticket. REVIEW, RECHECK,
+  exploration and comparison must report proposed ticket changes to the controller.
+  Never delete tickets, write comments, or perform other Linear mutations.
+
+  IMPLEMENT: make the smallest complete change and run the acceptance checks.
+  For Compare, preserve the approved design. If a materially new or revised design
+  is necessary, stop and return NEEDS_DESIGN_APPROVAL with the exact question.
+  A clarification answer does not approve a different design.
+  FIX: resolve the supplied findings, record each resolution, and rerun affected checks.
+  REVIEW and RECHECK: inspect without editing. Review the full task change against
+  the supplied baseline, including staged, unstaged, and untracked files and the
+  connected code. Keep findings stable and distinguish blockers from suggestions.
+  A and C use installed ponytail and ponytail-review skills. B uses the installed
+  code-review skill with independent Standards and Spec subreviews. Adapt HEAD-only
+  instructions to the complete working-tree change; never commit to obtain a diff.
+  C starts with the current code and requirements before reconciling earlier reports.
+  Use sys_os_read with the absolute installed path for skills and their references.
+  Access is limited to the explicit skill directories in this worker bundle.
+  Load each named skill from its installed location. If a required skill or review
+  capability is missing, return BLOCKED; never silently replace or skip it.
+
+  Return only the JSON contract in the stage brief. Include exact check commands,
+  outcomes, finding IDs, and resolution evidence. For REVIEW and RECHECK, return
+  COMPLETE when inspection is finished, listing actionable in-scope defects in
+  findings. The controller sends them to fixes and verification automatically.
+  For IMPLEMENT and FIX, COMPLETE requires the assigned changes and checks to pass.
+  Use NEEDS_INPUT only for a real user decision, missing information, conflicting
+  instructions, or additional authorization. The question must identify what is
+  needed and why you cannot proceed. Omit question for routine defects; do not ask
+  whether to fix them or continue the authorized workflow. Preserve explicitly
+  accepted exceptions in saved decisions; never add or broaden an exception.
+  Follow native approval prompts. Elapsed time and worker guesses are not answers.

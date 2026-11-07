@@ -274,6 +274,7 @@ from websockets.asyncio.server import serve
 state_dir = Path(os.environ["FAKE_APP_SERVER_STATE_DIR"])
 attempt = len(list(state_dir.glob("attempt-*"))) + 1
 (state_dir / f"attempt-{attempt}").write_text(str(os.getpid()))
+(state_dir / f"argv-{attempt}").write_text(json.dumps(sys.argv))
 host, port = sys.argv[sys.argv.index("--listen") + 1].removeprefix("ws://").split(":")
 first_mode = os.environ.get("FAKE_APP_SERVER_FIRST_MODE", "no_listener")
 if attempt == 1 and first_mode == "no_listener":
@@ -362,6 +363,7 @@ async def test_start_respawns_a_silent_app_server_on_the_same_transport(
     )
     server.codex_path = str(codex)
     server.listen_url = listen_url
+    server.developer_instructions = "WORKFLOW_GUIDANCE"
 
     await asyncio.wait_for(server.start(), timeout=15)
     try:
@@ -371,6 +373,11 @@ async def test_start_respawns_a_silent_app_server_on_the_same_transport(
         ]
         assert (state_dir / "initialize-received").exists() is (first_mode == "no_initialize")
         assert server.listen_url == listen_url
+        for attempt in (1, 2):
+            argv = json.loads((state_dir / f"argv-{attempt}").read_text())
+            instructions = [arg for arg in argv if arg.startswith("developer_instructions=")]
+            assert len(instructions) == 1
+            assert "WORKFLOW_GUIDANCE" in json.loads(instructions[0].split("=", 1)[1])
         silent_pid = int((state_dir / "attempt-1").read_text())
         # close() awaited the child, so it is reaped, not merely terminated.
         assert not psutil.pid_exists(silent_pid)

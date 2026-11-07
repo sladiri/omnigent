@@ -25,7 +25,14 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { BotIcon, WandSparklesIcon, FileTextIcon, Loader2Icon, XIcon } from "lucide-react";
+import {
+  BotIcon,
+  WandSparklesIcon,
+  FileTextIcon,
+  Loader2Icon,
+  TextQuoteIcon,
+  XIcon,
+} from "lucide-react";
 import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   composerSendShortcutKeys,
@@ -33,6 +40,7 @@ import {
 } from "@/components/KeyboardShortcut";
 import { useLocation, useNavigate, useParams, useRebasePath } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
+import { EffortSubmitButtons } from "@/components/EffortSubmitButtons";
 import {
   ChatComposer,
   type ComposerKeyIntent,
@@ -42,6 +50,9 @@ import {
 } from "@/components/composer/ChatComposer";
 import { ComposerMentionChips } from "@/components/composer/ComposerMentionChips";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { CodexModelChoice } from "@/components/composer/CodexModelChoice";
+import { WorkflowStartButton } from "@/components/composer/WorkflowStartButton";
+import { WorkflowPromptButtons } from "@/components/composer/WorkflowPromptButtons";
 import { BackgroundTaskIndicator } from "@/components/composer/BackgroundTaskIndicator";
 import { SubagentTaskIndicator } from "@/components/composer/SubagentTaskIndicator";
 import { subAgentComposerLabel } from "@/shell/subagentLabel";
@@ -3615,11 +3626,14 @@ function ComposerImpl(
     textareaRef.current = tailTextareaRef.current;
   };
 
+  const effortSubmitPending = useRef(false);
+  const [savingSubmitEffort, setSavingSubmitEffort] = useState(false);
+  const submitRoutingMode = useChatStore((s) => s.costControlModeOverride);
   const submit = ({
     resetNativeInputSession = false,
   }: { resetNativeInputSession?: boolean } = {}) => {
     // The /btw overlay locks the composer — never send while it's open.
-    if (composerLockedByBtw) return;
+    if (composerLockedByBtw || effortSubmitPending.current || isReadOnly) return;
     const trimmed = fullText.trim();
     // Allow send if there's text, attached files, OR "@"-tagged paths.
     if (
@@ -3781,6 +3795,33 @@ function ComposerImpl(
     setMention(null);
   };
 
+  const submitWithEffort = async (effort: string) => {
+    if (
+      effortSubmitPending.current ||
+      !hasDraft ||
+      disabled ||
+      isReadOnly ||
+      sendDisabledReason !== null ||
+      composerLockedByBtw ||
+      hasPendingElicitation
+    )
+      return;
+    effortSubmitPending.current = true;
+    setSavingSubmitEffort(true);
+    setCommandError(null);
+    try {
+      await useChatStore.getState().setEffort(effort);
+      effortSubmitPending.current = false;
+      if (useChatStore.getState().conversationId === conversationId)
+        submit({ resetNativeInputSession: true });
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Failed to set effort");
+    } finally {
+      effortSubmitPending.current = false;
+      setSavingSubmitEffort(false);
+    }
+  };
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (showInterruptButton) {
@@ -3916,6 +3957,14 @@ function ComposerImpl(
     resetCursor();
   };
 
+  const insertPrompt = (prompt: string) => {
+    editText(draft.quotes[0]?.id ?? null, (text) => `${prompt}\n\n${text}`);
+    dirtyRef.current = true;
+    resetCursor();
+    if (commandError !== null) setCommandError(null);
+    textareaRef.current?.focus();
+  };
+
   const handleTextFocus = (id: string | null, element: HTMLTextAreaElement) => {
     textareaRef.current = element;
     focusText(id);
@@ -4034,6 +4083,7 @@ function ComposerImpl(
         input={{
           ref: bindTailTextarea,
           value: draft.text,
+          readOnly: savingSubmitEffort,
           onChange: (e) => handleTextChange(null, e),
           onSelect: (e) => slashCompletion.onSelectionChange(e.currentTarget),
           onFocus: (e) => {
@@ -4080,6 +4130,48 @@ function ComposerImpl(
           ),
         }}
         slots={{
+          beforeActions: (
+            <>
+              <WorkflowPromptButtons
+                agentName={
+                  subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
+                }
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                draft={draft.quotes[0]?.before ?? draft.text}
+                onChange={(text) => {
+                  editText(draft.quotes[0]?.id ?? null, text);
+                  dirtyRef.current = true;
+                  resetCursor();
+                  if (commandError !== null) setCommandError(null);
+                  textareaRef.current?.focus();
+                }}
+              />
+              {composerSessionId &&
+                (subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name) ===
+                  "workflow-controller" && (
+                  <WorkflowStartButton
+                    sessionId={composerSessionId}
+                    disabled={
+                      disabled ||
+                      isReadOnly ||
+                      isWorking ||
+                      hasDraft ||
+                      hasPendingElicitation ||
+                      composerLockedByBtw ||
+                      savingSubmitEffort ||
+                      unreachable
+                    }
+                    onStart={onSend}
+                  />
+                )}
+            </>
+          ),
           inputPrefix:
             draft.quotes.length > 0 ? (
               <ReplyDraftBlocks
@@ -4363,6 +4455,45 @@ function ComposerImpl(
                   resetCursor();
                 }}
               />
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-2 text-xs md:h-8"
+                title="focus"
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                onClick={() =>
+                  insertPrompt(
+                    'We\'re in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.',
+                  )
+                }
+              >
+                <TextQuoteIcon className="size-4" aria-hidden="true" />
+                focus
+              </Button>
+              {showEffort &&
+                !showInterruptButton &&
+                !(costRoutingEligible && submitRoutingMode === "on") && (
+                  <EffortSubmitButtons
+                    levels={effortLevels}
+                    disabled={
+                      !hasDraft ||
+                      disabled ||
+                      isReadOnly ||
+                      unreachable ||
+                      hasPendingElicitation ||
+                      savingSubmitEffort
+                    }
+                    onSubmit={(effort) => void submitWithEffort(effort)}
+                  />
+                )}
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -4375,7 +4506,8 @@ function ComposerImpl(
                             disabled ||
                             isReadOnly ||
                             sendDisabledReason !== null ||
-                            hasPendingElicitation
+                            hasPendingElicitation ||
+                            savingSubmitEffort
                       }
                       title={showInterruptButton ? "Interrupt" : (sendDisabledReason ?? undefined)}
                       label={showInterruptButton ? "Interrupt" : "Send"}
@@ -4901,6 +5033,7 @@ function SessionHarnessPicker({
       : compactModelTriggerLabel(
           modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
         );
+  const showEffortControl = showEffort || modelPickerKind === "codex";
   const availableEfforts =
     modelPickerKind === "codex"
       ? codexEffortLevelsForModel(codexModelOptions, pickerSelectedModel)
@@ -5045,6 +5178,14 @@ function SessionHarnessPicker({
   ): ComposerConfigSection => ({
     testId: "composer-agent-efforts",
     header: modelPickerKind === "pi" ? "Thinking level" : "Effort",
+    leading:
+      levels.length === 0 ? (
+        <p className="px-2 py-1 text-xs text-muted-foreground">
+          {pickerSelectedModel
+            ? "Effort options unavailable for this model"
+            : "Select a model to choose effort"}
+        </p>
+      ) : undefined,
     choices: levels.map((effort) => ({
       key: effort,
       label: formatStatusEffortLabel(effort) ?? effort,
@@ -5055,10 +5196,9 @@ function SessionHarnessPicker({
       data: { "data-effort-level": effort },
     })),
   });
-  const effortSection =
-    showEffort && availableEfforts.length > 0
-      ? buildEffortSection(availableEfforts, selectedEffort, routingOn, selectEffort)
-      : undefined;
+  const effortSection = showEffortControl
+    ? buildEffortSection(availableEfforts, selectedEffort, routingOn, selectEffort)
+    : undefined;
   const fusionSections: readonly ComposerConfigSection[] | undefined =
     composerFusion !== undefined && fusionSelected && !routingOn
       ? buildFusionSections({
@@ -5214,7 +5354,7 @@ function SessionHarnessPicker({
       />
     </>
   );
-  return (
+  const picker = (
     <HarnessPicker
       cyclePreview={
         preview === "models"
@@ -5275,6 +5415,19 @@ function SessionHarnessPicker({
         </HarnessPickerConfigRow>
       )}
     </HarnessPicker>
+  );
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      {picker}
+      {showModels && modelPickerKind === "codex" && (
+        <CodexModelChoice
+          options={codexModelOptions}
+          currentModel={routingOn ? null : effectiveModel}
+          disabled={disabled || busy || pendingModelChange !== null || !!inferenceError}
+          onSelect={selectModel}
+        />
+      )}
+    </div>
   );
 }
 

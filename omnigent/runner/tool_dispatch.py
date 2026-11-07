@@ -200,7 +200,6 @@ def _string_mapping(value: object) -> dict[str, str] | None:
 _INBOX_OUTPUT_MAX_CHARS = 12000
 _OS_ENV_SHELL_DEFAULT_TIMEOUT_S = 120.0
 _RUNNER_EXECUTION_TIMEOUT_S = 7200.0
-_SUBAGENT_POLICY_STATUSES = frozenset({"completed", "failed"})
 _SUBAGENT_INBOX_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _SUBAGENT_POLICY_FAILURE_OUTPUT = "[Result suppressed by policy: policy evaluation failed]"
 _SESSION_WRAPPER_LABEL_KEY = "omnigent.wrapper"
@@ -537,15 +536,16 @@ def strip_browser_tool_schemas(schemas: list[_JsonObject]) -> list[_JsonObject]:
     return kept
 
 
-def build_native_relay_tool_schemas(spec: AgentSpec | None) -> list[_JsonObject]:
+def build_native_relay_tool_schemas(
+    spec: AgentSpec | None, *, workdir: Path | None = None
+) -> list[_JsonObject]:
     """Build the flat Omnigent tool surface for native harness bridges.
 
     Returns the same tool set the claude-native / codex-native relay advertises
     and that pi-native registers via ``pi.registerTool``: the spec-gated builtin
     surface (``_NATIVE_RELAY_BUILTIN_TOOLS`` — comment, session read/write,
-    agent-discovery, policy, and terminal families) plus the ``sys_os_*`` tools,
-    relayed unconditionally so they override any harness-static versions and get
-    centralized policy enforcement on the Omnigent server.
+    agent-discovery, policy, and terminal families) plus spec-local tools. The
+    ``sys_os_*`` tools are relayed unconditionally for centralized policy enforcement.
 
     Each entry is a flat ``{"name", "description", "parameters"}`` dict (the
     ``"function"`` sub-dict of an OpenAI tool schema), which is exactly what
@@ -554,6 +554,7 @@ def build_native_relay_tool_schemas(spec: AgentSpec | None) -> list[_JsonObject]
     :param spec: The session's resolved agent spec. ``None`` falls back to the
         always-on read/discovery surface (never the opt-in spawn writes, whose
         gate can't be evaluated without the spec), mirroring the relay.
+    :param workdir: Resolved agent bundle directory for local tool schemas.
     :returns: Flat tool schemas for native bridges.
     """
     from omnigent.tools.builtins.agents import (
@@ -591,10 +592,15 @@ def build_native_relay_tool_schemas(spec: AgentSpec | None) -> list[_JsonObject]
     if spec is not None:
         from omnigent.tools.manager import ToolManager
 
-        for schema in ToolManager(spec, os_env_schema_only=True).get_tool_schemas():
-            function = _string_object_dict(schema.get("function"))
-            if function is not None and function.get("name") in _NATIVE_RELAY_BUILTIN_TOOLS:
-                _append(function)
+        names = _NATIVE_RELAY_BUILTIN_TOOLS | {tool.name for tool in spec.local_tools}
+        manager = ToolManager(spec, workdir=workdir, os_env_schema_only=True)
+        try:
+            for schema in manager.get_tool_schemas():
+                function = _string_object_dict(schema.get("function"))
+                if function is not None and function.get("name") in names:
+                    _append(function)
+        finally:
+            manager.shutdown()
     else:
         from omnigent.tools.builtins.policy import SysAddPolicyTool, SysPolicyRegistryTool
 
@@ -2165,6 +2171,35 @@ def _subagent_harness(sub_agent_name: str, agent_spec: AgentSpec | None) -> str 
     return spec_harness(sub_spec) if sub_spec is not None else None
 
 
+def _validated_subagent_workspace(
+    workspace: str, sub_agent_name: str, agent_spec: AgentSpec | None
+) -> str:
+    """Validate a named child's workspace on its current runner.
+
+    :param workspace: Requested absolute directory on the runner.
+    :param sub_agent_name: Declared child whose cwd boundary applies.
+    :param agent_spec: Parent spec; supplies cwd when the child omits it.
+    :returns: Canonical existing workspace directory.
+    :raises OSError, ValueError: The directory or boundary is invalid.
+    """
+    from omnigent.server.routes._workspace_validation import _is_relative_cwd
+
+    resolved = Path(workspace).resolve(strict=True)
+    if not resolved.is_dir():
+        raise ValueError("workspace must be an existing directory")
+    child_spec = _find_subagent_spec(sub_agent_name, agent_spec)
+    cwd = getattr(getattr(child_spec, "os_env", None), "cwd", None)
+    if cwd is None:
+        cwd = getattr(getattr(agent_spec, "os_env", None), "cwd", None)
+    if cwd is not None and not _is_relative_cwd(cwd):
+        boundary = Path(cwd).expanduser().resolve(strict=True)
+        if not boundary.is_dir() or not resolved.is_relative_to(boundary):
+            raise ValueError(f"workspace is outside the agent's required directory {cwd!r}")
+    elif cwd and cwd.startswith("./") and cwd != "./" and not (resolved / cwd[2:]).is_dir():
+        raise ValueError(f"workspace lacks the agent's required subdirectory {cwd!r}")
+    return str(resolved)
+
+
 def _subagent_harness_override_from_args(args: _JsonObject) -> str | None:
     """
     Extract a per-dispatch harness override from ``sys_session_send`` args.
@@ -2543,10 +2578,18 @@ async def _execute_subagent_tool(
     except (ValueError, TypeError) as exc:
         return f"Error: sys_session_send invalid 'cost_budget': {exc}"
 
+    workspace = args.get("workspace")
+    if workspace is not None and (
+        not isinstance(workspace, str) or not workspace or not Path(workspace).is_absolute()
+    ):
+        return "Error: sys_session_send 'workspace' must be an absolute directory path"
+
     # By-session-id mode: post to an existing direct child instead of
     # spawning/continuing a named (agent, title) sub-agent.
     target_session_id = args.get("session_id")
     if isinstance(target_session_id, str) and target_session_id:
+        if workspace is not None:
+            return "Error: sys_session_send 'workspace' applies only when creating a named child"
         # Fail loud on a double-addressed send. The two modes can point at
         # different children, so silently letting session_id win would
         # misroute the message with no signal to the caller.
@@ -2662,6 +2705,11 @@ async def _execute_subagent_tool(
         child_session_id = existing.get("id")
         if not isinstance(child_session_id, str) or not child_session_id:
             return "Error: existing child session is missing id"
+        if workspace is not None:
+            return (
+                "Error: sys_session_send 'workspace' applies only when creating a named child; "
+                f"re-send without 'workspace' to continue {child_session_id!r}"
+            )
         if model is not None:
             # A native child bakes --model in at terminal launch, so a
             # mid-conversation override would be silently ignored there.
@@ -2736,6 +2784,13 @@ async def _execute_subagent_tool(
                 created_by=dispatch_created_by,
             )
     else:
+        if isinstance(workspace, str):
+            try:
+                workspace = await asyncio.to_thread(
+                    _validated_subagent_workspace, workspace, sub_agent_name, agent_spec
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"Error: sys_session_send invalid 'workspace': {exc}"
         _auto_ordinal = False
         if not session_name:
             # No title hint — auto-generate a structured session name
@@ -2839,6 +2894,8 @@ async def _execute_subagent_tool(
             "sub_agent_name": sub_agent_name,
             "labels": {_subagent_work.SUBAGENT_DISPATCH_ID_LABEL_KEY: work_id},
         }
+        if workspace is not None:
+            create_body["workspace"] = workspace
         if harness_override_canonical is not None:
             create_body["harness_override"] = harness_override_canonical
         if model is not None:
@@ -8431,6 +8488,10 @@ def _subagent_tool_result_policy_request(
                     "title": payload.get("title"),
                     "conversation_id": _subagent_child_id(payload),
                 },
+                "subagent": {
+                    "status": payload.get("status"),
+                    "work_id": payload.get("work_id"),
+                },
             },
         }
     }
@@ -8551,7 +8612,7 @@ async def _evaluate_subagent_inbox_output(
     """
     if (
         payload.get("type") != "sub_agent"
-        or payload.get("status") not in _SUBAGENT_POLICY_STATUSES
+        or payload.get("status") not in _SUBAGENT_INBOX_TERMINAL_STATUSES
     ):
         return _SubagentInboxEvaluation(payload)
     output = payload.get("output")

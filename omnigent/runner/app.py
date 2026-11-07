@@ -5139,7 +5139,10 @@ def create_runner_app(
         from omnigent.runner.tool_dispatch import build_native_relay_tool_schemas
 
         relay_spec = _unwrap_spec_entry(spec_entry)
-        relay_schemas: list[_JsonObject] = build_native_relay_tool_schemas(relay_spec)
+        relay_schemas: list[_JsonObject] = build_native_relay_tool_schemas(
+            relay_spec,
+            workdir=_resolved_workdir_for_spec(spec_entry, runner_workspace),
+        )
         if relay_spec is not None and relay_spec.mcp_servers:
             # Native terminals consume the persistent relay, not per-turn schemas.
             mcp = await ProxyMcpManager(session_id, server_client).schemas_for(relay_spec)
@@ -5912,6 +5915,9 @@ def create_runner_app(
             _ds_agent_id,
             None if dispatch else cast(str | None, body.get("agent_revision")),
         )
+        # A restarted runner can receive a turn before session init is repeated.
+        _session_inboxes.setdefault(conv_id, asyncio.Queue())
+        _session_async_tasks.setdefault(conv_id, {})
         startup_envelope = _fresh_session_init_envelope(conv_id)
         startup_labels = startup_envelope.snapshot.labels if startup_envelope is not None else None
         if not harness_name:

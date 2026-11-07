@@ -1803,7 +1803,7 @@ function pickSelectOption(triggerTestId: string, label: string): void {
     return;
   }
   openSelect(triggerTestId);
-  fireEvent.click(screen.getByText(label));
+  fireEvent.click(within(screen.getByRole("listbox")).getByText(label));
 }
 
 /** Dismiss any open menu. */
@@ -4967,6 +4967,7 @@ describe("NewChatLandingScreen", () => {
     renderLanding();
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
     clickAgentConfig("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-5"));
 
     expect(screen.getByTestId("new-chat-landing-agent-efforts")).toHaveTextContent("Effort");
     expect(screen.getByTestId("new-chat-landing-agent-effort-low")).toBeTruthy();
@@ -6679,6 +6680,40 @@ describe("NewChatLandingScreen", () => {
         .getAllByRole("menuitemradio")
         .map((item) => item.textContent),
     ).toEqual(["Default", "Full access", "Read only", "Bypass approvals & sandbox"]);
+  });
+
+  it("uses the quick Codex model choice for the first message", async () => {
+    const options = [
+      { id: "databricks-gpt-6-1-sol", displayName: "GPT-6.1 Sol", isDefault: true },
+      { id: "databricks-gpt-6-astra", displayName: "GPT-6 Astra" },
+    ];
+    mockModelQueries((harness) =>
+      harness === "codex-native"
+        ? { ...CODEX_MODEL_OPTIONS_RESULT, data: options }
+        : CLAUDE_MODEL_OPTIONS_RESULT,
+    );
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+    renderLanding();
+    expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+    selectAgent("a2");
+    const hi = await screen.findByRole("button", { name: "Hi: GPT-6 Astra" });
+    await waitFor(() => expect(hi).toBeEnabled());
+    fireEvent.click(hi);
+    expect(hi).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Med: GPT-6.1 Sol" }));
+    expect(hi).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(hi);
+    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+      target: { value: "run the build" },
+    });
+    fireEvent.submit(screen.getByTestId("new-chat-landing-composer"));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = authenticatedFetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.model_override).toBe("databricks-gpt-6-astra");
   });
 
   it("offers the Codex effort ladder in the gear modal and sends the pick as reasoning_effort", async () => {
@@ -10324,6 +10359,71 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
     );
   });
 
+  it.each([false, true])(
+    "selects the controller and exposes usable workflow buttons (mobile=%s)",
+    async (mobile) => {
+      if (mobile) onTestFinished(forceMobileViewport());
+      mockAgents([
+        ...DEFAULT_LANDING_AGENTS,
+        testAgent("ag_workflow", "workflow-controller", {
+          display_name: "Workflow-controller",
+          harness: "codex-native",
+          mine: true,
+        }),
+      ]);
+      authenticatedFetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: "conv_workflow" }),
+      } as Response);
+      renderLanding();
+      selectAgent("a2");
+      expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "review" })).toBeNull();
+      openPicker();
+      fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+      fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+        target: { value: "My task" },
+      });
+      for (const workflow of ["implement", "compare", "review"]) {
+        fireEvent.click(screen.getByRole("button", { name: workflow }));
+        fireEvent.click(screen.getByRole("button", { name: workflow }));
+        expect(screen.getByRole("button", { name: workflow })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
+          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
+        );
+        expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
+      }
+      expect(authenticatedFetchMock.mock.calls.some(([url]) => url === "/v1/sessions")).toBe(false);
+      selectAgent("a2");
+      expect(screen.queryByRole("button", { name: "implement" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "review" })).toBeNull();
+      expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
+        "Prepare the start message for `review-fix` using the task below.\n\nMy task",
+      );
+      openPicker();
+      fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+      fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveAccessibleName(
+        /Workflow-controller/,
+      );
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveTextContent(
+        "Workflow-controller",
+      );
+      remountLanding();
+      expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveTextContent(
+        "Workflow-controller · GPT-5.5",
+      );
+      const { body } = await submitAndReadBody();
+      expect(body.agent_id).toBe("ag_workflow");
+    },
+  );
+
   it("hides Codex's transport namespace in the new-session model label", () => {
     const wireModel = "system.ai.gpt-6-astra";
     useHostModelOptionsMock.mockImplementation(
@@ -11438,6 +11538,23 @@ describe("NewChatLandingScreen Smart Routing harness row", () => {
     openPicker();
     fireEvent.click(screen.getByTestId(SMART_ROUTING_ROW));
   }
+
+  it("drops Smart Routing restored from another project", async () => {
+    const first = renderLanding({ smart_routing_enabled: true }, "/?project=Beta");
+    selectSmartRoutingHarness();
+    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+      target: { value: "keep routing draft" },
+    });
+    first.unmount();
+
+    renderLanding({ smart_routing_enabled: true }, "/?project=Alpha");
+    expect((screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement).value).toBe(
+      "keep routing draft",
+    );
+    const { body } = await submitAndReadBody();
+    expect(body.harness_override).toBeUndefined();
+    expect(body.smart_routing_message).toBeUndefined();
+  });
 
   it("offers the row in its own unlabeled group above the harnesses", () => {
     renderLanding({ smart_routing_enabled: true });

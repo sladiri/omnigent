@@ -584,3 +584,33 @@ def test_read_only_os_allows_reads_and_shell() -> None:
     assert _result(evaluate(_tool_call("sys_os_read", path="a.py"), {})) == "ALLOW"
     assert _result(evaluate(_tool_call("sys_os_shell", command="rg secret"), {})) == "ALLOW"
     assert _result(evaluate(_tool_call("Read", file_path="a.py"), {})) == "ALLOW"
+
+
+@pytest.mark.parametrize("tool", ["sys_os_shell", "Bash", "exec_command"])
+@pytest.mark.parametrize("operation", ["template", "lint"])
+def test_blast_radius_allows_local_helm_checks_in_deploy_paths(tool, operation):
+    command = (
+        "cd /tmp/candidate && helm "
+        + operation
+        + " deploy/k8s/charts/homekit --set images.homekit.tag=test"
+    )
+    assert (
+        _result(blast_radius(risky_action="DENY")(_tool_call(tool, command=command), {}))
+        == "ALLOW"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "helm delete homekit",
+        "helm template deploy/chart && terraform apply",
+        "helm template deploy/chart; helm delete homekit",
+        "helm template deploy/chart && rm -rf /",
+    ],
+)
+def test_local_helm_check_does_not_exempt_other_commands(command):
+    assert (
+        _result(blast_radius(risky_action="DENY")(_tool_call("Bash", command=command), {}))
+        == "DENY"
+    )

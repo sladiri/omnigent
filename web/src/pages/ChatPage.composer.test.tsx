@@ -1,3 +1,4 @@
+vi.mock("@/components/composer/WorkflowStartButton", () => ({ WorkflowStartButton: () => null }));
 import { create } from "zustand";
 import type { SkillSummary, SkillsStatus } from "@/lib/types";
 
@@ -6851,6 +6852,57 @@ describe("Composer config gear", () => {
       expect(screen.queryByTestId("composer-agent-menu")).toBeNull();
     },
   );
+  describe("quick Codex model choice", () => {
+    const options = [
+      { id: "gpt-6.1-sol", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
+      { id: "gpt-6-astra", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+    ];
+    const props = () =>
+      composerProps({
+        showModels: true,
+        modelPickerKind: "codex",
+        codexModelOptions: options,
+      });
+
+    it("switches directly, waits for confirmation, and resets unsupported effort", async () => {
+      const previous = useChatStore.getState();
+      onTestFinished(() => useChatStore.setState(previous, true));
+      const setModel = vi.fn().mockImplementation(async (model: string) => {
+        useChatStore.setState({ sessionModelOverride: model, pendingModelChange: model });
+      });
+      const setEffort = vi.fn().mockResolvedValue(undefined);
+      useChatStore.setState({
+        llmModel: "gpt-6.1-sol",
+        sessionReasoningEffort: "medium",
+        setModel,
+        setEffort,
+      });
+      renderWithTooltips(<Composer {...props()} />);
+      const med = screen.getByRole("button", { name: "Med: GPT-6.1 Sol" });
+      const hi = screen.getByRole("button", { name: "Hi: GPT-6 Astra" });
+      fireEvent.click(hi);
+      await waitFor(() => expect(setEffort).toHaveBeenCalledWith(null));
+      expect(setModel).toHaveBeenCalledWith("gpt-6-astra", { expectConfirmation: true });
+      expect(med).toHaveAttribute("aria-pressed", "true");
+      expect(hi).toBeDisabled();
+      fireEvent.click(med);
+      expect(setModel).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("composer-agent-menu")).toBeNull();
+      act(() => useChatStore.setState({ llmModel: "gpt-6-astra", pendingModelChange: null }));
+      expect(hi).toHaveAttribute("aria-pressed", "true");
+      expect(hi).toBeEnabled();
+    });
+
+    it.each(["claude", null] as const)("hides for picker kind %s", (modelPickerKind) => {
+      renderWithTooltips(<Composer {...props()} modelPickerKind={modelPickerKind} />);
+      expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+    });
+
+    it("disables changes for read-only sessions", () => {
+      renderWithTooltips(<Composer {...props()} readOnlyReason="Read only" />);
+      expect(screen.getByRole("button", { name: "Hi: GPT-6 Astra" })).toBeDisabled();
+    });
+  });
 
   it("renders when the session has a switchable knob (effort)", () => {
     renderWithTooltips(<Composer {...composerProps({ showEffort: true })} />);
@@ -7919,6 +7971,166 @@ describe("saved sandbox inference policy", () => {
         fireEvent.click(choice);
       }
       expect(useChatStore.getState().setModel).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("effort submit buttons", () => {
+  const originalSetEffort = useChatStore.getState().setEffort;
+  beforeEach(() => {
+    clearSessionDrafts();
+    useChatStore.setState({ conversationId: "effort-submit", costControlModeOverride: null });
+  });
+  afterEach(() => {
+    cleanup();
+    useChatStore.setState({ setEffort: originalSetEffort });
+  });
+
+  it.each(["low", "medium", "high", "xhigh"])(
+    "sets %s before sending exactly once",
+    async (effort) => {
+      let finish!: () => void;
+      const setEffort = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      useChatStore.setState({ setEffort });
+      const onSend = vi.fn();
+      renderWithTooltips(
+        <Composer
+          {...composerProps({ onSend, effortLevels: ["low", "medium", "high", "xhigh"] })}
+        />,
+      );
+      const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
+      expect(button).toBeDisabled();
+      fireEvent.change(textarea(), { target: { value: "hello" } });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      expect(setEffort).toHaveBeenCalledExactlyOnceWith(effort);
+      expect(onSend).not.toHaveBeenCalled();
+      const focus = screen.getByRole("button", { name: "focus" });
+      expect(focus).toBeDisabled();
+      fireEvent.click(focus);
+      expect(textarea()).toHaveValue("hello");
+      finish();
+      await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("hello", undefined));
+      expect(focus).toBeEnabled();
+    },
+  );
+
+  it("keeps the draft when setting effort fails", async () => {
+    useChatStore.setState({ setEffort: vi.fn().mockRejectedValue(new Error("Effort failed")) });
+    const onSend = vi.fn();
+    renderWithTooltips(<Composer {...composerProps({ onSend })} />);
+    fireEvent.change(textarea(), { target: { value: "keep this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send with low effort" }));
+    await screen.findByText("Effort failed");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea()).toHaveValue("keep this");
+    expect(screen.getByRole("button", { name: "focus" })).toBeEnabled();
+  });
+
+  it("only offers supported quick levels", () => {
+    const view = renderWithTooltips(
+      <Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />,
+    );
+    expect(screen.queryByRole("button", { name: "Send with low effort" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send with high effort" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send with xhigh effort" })).toHaveTextContent(
+      "X-high",
+    );
+    view.rerender(
+      <TooltipProvider>
+        <Composer {...composerProps({ effortLevels: ["high"] })} />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Send with xhigh effort" })).toBeNull();
+  });
+});
+
+describe("workflow prompt visibility", () => {
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+    setComposerState({ subAgentName: null });
+  });
+
+  it("shows workflow prompts only for the selected controller and preserves the draft", () => {
+    clearSessionDrafts();
+    setComposerState({ conversationId: "workflow-prompt", subAgentName: null });
+    const props = composerProps({
+      agents: [
+        { id: "controller", name: "workflow-controller" },
+        { id: "coding", name: "codex" },
+      ],
+    });
+    const view = renderWithTooltips(<Composer {...props} />);
+    fireEvent.change(textarea(), { target: { value: "My task" } });
+    for (const selectedAgentId of [null, "coding", "controller", "coding", "missing"]) {
+      view.rerender(
+        <TooltipProvider>
+          <Composer {...props} selectedAgentId={selectedAgentId} />
+        </TooltipProvider>,
+      );
+      for (const name of ["implement", "compare", "review"]) {
+        expect(screen.queryByRole("button", { name }) !== null).toBe(
+          selectedAgentId === "controller",
+        );
+      }
+      expect(screen.getByRole("button", { name: "focus" })).toBeVisible();
+      expect(textarea()).toHaveValue("My task");
+    }
+    view.rerender(
+      <TooltipProvider>
+        <Composer {...props} selectedAgentId="controller" />
+      </TooltipProvider>,
+    );
+    fireEvent.change(textarea(), {
+      target: {
+        value:
+          "Prepare the start message for `review-fix` using the task below.\n\nPrepare the start message for `implement-review-fix` using the task below.\n\nMy task",
+      },
+    });
+    for (const workflow of ["implement", "compare", "review"]) {
+      fireEvent.click(screen.getByRole("button", { name: workflow }));
+      fireEvent.click(screen.getByRole("button", { name: workflow }));
+      expect(screen.getByRole("button", { name: workflow })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(textarea()).toHaveValue(
+        `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
+      );
+      expect(textarea()).toHaveFocus();
+    }
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("focus prompt button", () => {
+  beforeEach(() => {
+    clearSessionDrafts();
+    setComposerState({ conversationId: "focus-prompt" });
+  });
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+  });
+
+  it.each(["", "Implement the requested change."])(
+    "prepends focus text to %j without sending",
+    (draft) => {
+      const props = composerProps();
+      renderWithTooltips(<Composer {...props} />);
+      fireEvent.change(textarea(), { target: { value: draft } });
+      fireEvent.click(screen.getByRole("button", { name: "focus" }));
+      expect(textarea()).toHaveValue(
+        `We're in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.\n\n${draft}`,
+      );
+      expect(props.onSend).not.toHaveBeenCalled();
+      expect(textarea()).toHaveFocus();
     },
   );
 });

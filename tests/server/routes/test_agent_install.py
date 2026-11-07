@@ -492,6 +492,37 @@ async def test_agent_detail_redacts_mcp_headers(client, monkeypatch) -> None:
     assert "test-token" not in patched.text
 
 
+async def test_operator_workflow_controller_in_authenticated_server(
+    client, agent_store, artifact_store, tmp_path, monkeypatch
+) -> None:
+    from omnigent.cli import _preregister_agent
+    from omnigent.policies.registry import load_registry
+    from omnigent.runner.tool_dispatch import _bundle_local_agent_source
+
+    monkeypatch.delenv("OMNIGENT_LOCAL_SINGLE_USER", raising=False)
+    load_registry()
+    source = Path(__file__).parents[3] / "examples/workflow_controller"
+    response = await client.post(
+        "/v1/agents",
+        headers=ALICE,
+        files={
+            "bundle": ("bundle.tar.gz", _bundle_local_agent_source(source), "application/gzip")
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "server-side Python/TS tool" in response.text
+    assert await _my_names(client, ALICE) == []
+
+    agent_id = _preregister_agent(
+        source, agent_store, artifact_store, AgentCache(artifact_store, tmp_path / "cache")
+    )
+    assert agent_id is not None
+    for headers in (ALICE, BOB):
+        response = await client.get(f"/v1/agents/{agent_id}", headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["name"] == "workflow-controller"
+
+
 def _retarred(bundle: bytes, mtime: int) -> bytes:
     """The same files tarred again, as the CLI does on every run: new timestamps,
     owner, and member order."""

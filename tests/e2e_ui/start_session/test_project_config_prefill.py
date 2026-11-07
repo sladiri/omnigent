@@ -39,6 +39,7 @@ _HOST_ID = "host_e2e_cfg"
 _PROJECT_ID = "proj_e2e_cfg"
 _PROJECT_NAME = "ConfiguredProject"
 _CONFIG_WORKSPACE = "/work/configured-repo"
+_DRAFT_WORKSPACE = "/work/unfiled-draft"
 # Bare create endpoint (POST captured); NOT the /{id}/... sub-routes.
 _SESSIONS_RE = re.compile(r"/v1/sessions(\?.*)?$")
 # One project config endpoint: /v1/projects/<id> (not the bare list).
@@ -98,12 +99,14 @@ def _project_config_body() -> str:
     )
 
 
-def test_composer_prefills_from_project_config(seeded_session: tuple[str, str]) -> None:
-    """A ``?project=`` visit seeds host / workspace / agent from stored config.
+def test_project_config_replaces_unfiled_draft_launch_state(
+    seeded_session: tuple[str, str],
+) -> None:
+    """A project visit keeps draft text but replaces unrelated launch state.
 
-    The pinned agent (``ag_pinned_e2e``) and workspace (``/work/configured-repo``)
-    come from ``config`` — NOT from the default-ranked Claude Code or a recent
-    workspace — and ride along to ``POST /v1/sessions``.
+    An unfinished global composer starts in a recent workspace, then unmounts
+    through normal SPA navigation. The project's sidebar action must restore the
+    message while replacing that workspace and default agent from stored config.
     """
     base_url, session_id = seeded_session
     _run_in_fresh_loop(_drive_prefill(base_url, session_id))
@@ -173,9 +176,30 @@ async def _drive_prefill(base_url: str, session_id: str) -> None:
             )
             await page.route(OWN_AGENTS, lambda route: route.fulfill(json={"data": []}))
 
-            await page.goto(f"{base_url}/?project={_PROJECT_NAME}")
+            await page.add_init_script(
+                f"""window.localStorage.setItem(
+                    "omnigent:recent-workspaces",
+                    JSON.stringify({{ {_HOST_ID}: ["{_DRAFT_WORKSPACE}"] }})
+                );"""
+            )
+
+            await page.goto(f"{base_url}/")
             await page.get_by_test_id("new-chat-landing-input").wait_for(
                 state="visible", timeout=30_000
+            )
+            await expect(page.get_by_test_id("new-chat-landing-workspace-chip")).to_contain_text(
+                "unfiled-draft", timeout=15_000
+            )
+            await page.get_by_test_id("new-chat-landing-input").fill("start here")
+
+            await page.locator(f'a[href="/c/{session_id}"]').click()
+            await page.wait_for_url(f"**/c/{session_id}")
+            await page.get_by_role("link", name=f"New session in {_PROJECT_NAME}").click()
+            await page.wait_for_url(f"**/?project={_PROJECT_NAME}")
+
+            await expect(page.get_by_test_id("new-chat-landing-input")).to_have_value("start here")
+            await expect(page.get_by_test_id("new-chat-landing-workspace-chip")).to_contain_text(
+                "configured-repo", timeout=15_000
             )
 
             # The agent picker trigger reflects the config-pinned agent (Polly),
@@ -184,7 +208,6 @@ async def _drive_prefill(base_url: str, session_id: str) -> None:
                 "Polly", timeout=15_000
             )
 
-            await page.get_by_test_id("new-chat-landing-input").fill("start here")
             await page.get_by_test_id("new-chat-landing-submit").click()
 
             await poll_until_async(lambda: len(create_bodies) == 1)

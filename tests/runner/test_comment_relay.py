@@ -1781,3 +1781,62 @@ async def test_failed_launch_rolls_back_only_new_relay(
                 await c.delete(f"/v1/sessions/{session_id}")
         shutil.rmtree(bridge_dir, ignore_errors=True)
         shutil.rmtree(next_bridge_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_relay_advertises_bundled_workflow_tools_and_removes_them_on_agent_switch(
+    tmp_path: Path,
+) -> None:
+    """Native controllers and workers receive tools from their resolved bundle."""
+    from omnigent.spec import load
+
+    bundle = Path(__file__).resolve().parents[2] / "examples/workflow_controller"
+    controller = load(bundle)
+    worker_bundle = bundle / "agents/worker"
+    worker = load(worker_bundle)
+    server_client = _SwitchableServerClient("controller")
+    app = _switch_app(
+        tmp_path,
+        server_client,
+        {
+            "controller": ResolvedSpec(spec=controller, workdir=bundle),
+            "worker": ResolvedSpec(spec=worker, workdir=worker_bundle),
+            "plain": _spec_without_terminals(),
+        },
+    )
+    session_id = f"conv_{uuid.uuid4().hex[:12]}"
+    bridge_dir = prepare_bridge_dir(session_id, workspace=tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://runner"
+        ) as client:
+            for agent_id, expected in (
+                (
+                    "controller",
+                    {
+                        "workflow_status",
+                        "workflow_draft",
+                        "workflow_prepare",
+                        "workflow_snapshot",
+                        "workflow_reconcile",
+                        "workflow_present",
+                        "workflow_publish",
+                        "workflow_read",
+                        "workflow_journal",
+                        "workflow_review_checkout",
+                    },
+                ),
+                ("worker", {"workflow_stage", "workflow_read", "workflow_journal"}),
+                ("plain", set()),
+            ):
+                server_client.agent_id = agent_id
+                await _reset_state(client, session_id)
+                await _launch_bridged(client, session_id)
+                tools = _relay_tool_names(bridge_dir / _TOOL_RELAY_FILE)
+                assert {name for name in tools if name.startswith("workflow_")} == expected
+    finally:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://runner"
+        ) as client:
+            await client.delete(f"/v1/sessions/{session_id}")
+        shutil.rmtree(bridge_dir, ignore_errors=True)
