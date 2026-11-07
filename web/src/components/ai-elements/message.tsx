@@ -25,6 +25,7 @@ import { createPortal } from "react-dom";
 import { Streamdown, type StreamdownProps } from "streamdown";
 
 import { MarkdownErrorBoundary } from "./MarkdownErrorBoundary";
+import { ChatTable } from "./ChatTable";
 import { MERMAID_STREAMDOWN_OPTIONS } from "./MermaidError";
 
 import {
@@ -639,7 +640,7 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
 export const MessageResponse = memo(
   ({ className, components, controls, markFileLinks = false, ...props }: MessageResponseProps) => {
     const messageComponents = useMemo(
-      () => ({ ...components, pre: ChatCodeBlockPre }),
+      () => ({ table: ChatTable, ...components, pre: ChatCodeBlockPre }),
       [components],
     );
 

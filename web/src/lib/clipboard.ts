@@ -1,5 +1,23 @@
-export async function copyText(text: string): Promise<void> {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+export async function copyText(text: string, html?: string): Promise<void> {
+  if (
+    html !== undefined &&
+    typeof navigator !== "undefined" &&
+    navigator.clipboard?.write &&
+    typeof ClipboardItem !== "undefined"
+  ) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // Keep both formats when rich clipboard access is denied.
+    }
+  }
+  if (html === undefined && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return;
@@ -9,12 +27,12 @@ export async function copyText(text: string): Promise<void> {
     }
   }
 
-  if (copyTextWithExecCommand(text)) return;
+  if (copyTextWithExecCommand(text, html)) return;
 
   throw new Error("Clipboard API not available");
 }
 
-function copyTextWithExecCommand(text: string): boolean {
+function copyTextWithExecCommand(text: string, html?: string): boolean {
   if (
     typeof document === "undefined" ||
     typeof document.execCommand !== "function" ||
@@ -46,10 +64,14 @@ function copyTextWithExecCommand(text: string): boolean {
   const handleCopy = (event: ClipboardEvent) => {
     event.preventDefault();
     event.clipboardData?.setData("text/plain", text);
+    if (html !== undefined) event.clipboardData?.setData("text/html", html);
   };
 
   document.addEventListener("copy", handleCopy);
-  document.body.appendChild(textArea);
+  // Keep temporary focus inside the active menu or dialog's focus trap.
+  (
+    previouslyFocused?.closest('[role="dialog"], [role="menu"], dialog') ?? document.body
+  ).appendChild(textArea);
   try {
     textArea.focus();
     textArea.select();

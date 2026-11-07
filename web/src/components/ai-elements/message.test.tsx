@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "./message";
 
@@ -183,5 +184,103 @@ describe("MessageResponse code-block copy", () => {
       expect(copiedText).toEqual(["const value = 1;\nconsole.log(value);\n"]);
     });
     expect(screen.getByRole("button", { name: "Download file" })).toBeInTheDocument();
+  });
+});
+
+describe("MessageResponse table copy", () => {
+  const markdown = "| Name | Value |\n| --- | --- |\n| Example | 42 |";
+  const formats = [
+    ["Markdown", markdown],
+    ["CSV", "Name,Value\nExample,42"],
+    ["TSV", "Name\tValue\nExample\t42"],
+  ];
+
+  function fallbackClipboard(rejected: boolean, succeeds = true) {
+    const setData = vi.fn();
+    vi.spyOn(navigator, "clipboard", "get").mockReturnValue(
+      (rejected
+        ? { write: vi.fn().mockRejectedValue(new Error("denied")) }
+        : undefined) as unknown as Clipboard,
+    );
+    vi.stubGlobal("ClipboardItem", class {});
+    Object.defineProperty(Document.prototype, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => {
+        if (!succeeds) return false;
+        const event = new Event("copy", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "clipboardData", { value: { setData } });
+        document.dispatchEvent(event);
+        return true;
+      }),
+    });
+    return setData;
+  }
+
+  describe.each([false, true])("clipboard rejected: %s", (rejected) => {
+    it.each(formats)("copies %s and HTML through the fallback", async (format, expected) => {
+      const user = userEvent.setup();
+      const setData = fallbackClipboard(rejected);
+      render(<MessageResponse>{markdown}</MessageResponse>);
+      const html = screen.getByRole("table").outerHTML;
+
+      await user.click(screen.getByRole("button", { name: "Copy table" }));
+      await user.click(screen.getByRole("menuitem", { name: format }));
+
+      await waitFor(() => expect(setData).toHaveBeenCalledWith("text/plain", expected));
+      expect(setData).toHaveBeenCalledWith("text/html", html);
+      expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+      expect(document.querySelector("textarea")).toBeNull();
+    });
+  });
+
+  it("copies the selected table from fullscreen", async () => {
+    const user = userEvent.setup();
+    const setData = fallbackClipboard(false);
+    render(
+      <MessageResponse>
+        {markdown + "\n\n" + markdown.replace("Example", "Second")}
+      </MessageResponse>,
+    );
+    await user.click(screen.getAllByRole("button", { name: "View fullscreen" })[1]);
+    const dialog = screen.getByRole("dialog", { name: "Table" });
+    await user.click(within(dialog).getByRole("button", { name: "Copy table" }));
+    await user.click(screen.getByRole("menuitem", { name: "Markdown" }));
+
+    await waitFor(() =>
+      expect(setData).toHaveBeenCalledWith("text/plain", markdown.replace("Example", "Second")),
+    );
+    expect(setData).toHaveBeenCalledWith("text/html", within(dialog).getByRole("table").outerHTML);
+    expect(within(dialog).getByRole("button", { name: "Download table" })).toBeInTheDocument();
+  });
+
+  it("reports a clipboard failure", async () => {
+    const user = userEvent.setup();
+    fallbackClipboard(false, false);
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    render(<MessageResponse>{markdown}</MessageResponse>);
+    await user.click(screen.getByRole("button", { name: "Copy table" }));
+    await user.click(screen.getByRole("menuitem", { name: "Markdown" }));
+
+    await waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "omnigent:toast",
+          detail: { content: "Could not copy table. Select the table text and copy it manually." },
+        }),
+      ),
+    );
+  });
+
+  it("honors table controls and disables actions during streaming", () => {
+    const { rerender } = render(<MessageResponse isAnimating>{markdown}</MessageResponse>);
+    expect(screen.getByRole("button", { name: "Copy table" })).toBeDisabled();
+    rerender(
+      <MessageResponse controls={{ table: { copy: false, fullscreen: false } }}>
+        {markdown}
+      </MessageResponse>,
+    );
+    expect(screen.queryByRole("button", { name: "Copy table" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View fullscreen" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download table" })).toBeInTheDocument();
   });
 });

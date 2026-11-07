@@ -6,6 +6,7 @@ const clipboardDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype,
 const execCommandDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "execCommand");
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
   document.getSelection()?.removeAllRanges();
@@ -24,6 +25,52 @@ afterEach(() => {
 });
 
 describe("copyText", () => {
+  it("writes plain text and HTML through the rich clipboard API", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const items: Record<string, Blob>[] = [];
+    vi.stubGlobal("ClipboardItem", function (data: Record<string, Blob>) {
+      items.push(data);
+    });
+    Object.defineProperty(Navigator.prototype, "clipboard", {
+      configurable: true,
+      value: { write },
+    });
+
+    await copyText("table text", "<table></table>");
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(items).toHaveLength(1);
+    expect(items[0]["text/plain"]).toMatchObject({ type: "text/plain", size: 10 });
+    expect(items[0]["text/html"]).toMatchObject({ type: "text/html", size: 15 });
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
+  it("keeps fallback focus inside the active menu", async () => {
+    Object.defineProperty(Navigator.prototype, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    const item = document.createElement("button");
+    menu.appendChild(item);
+    document.body.appendChild(menu);
+    item.focus();
+    Object.defineProperty(Document.prototype, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => {
+        expect(document.activeElement?.tagName).toBe("TEXTAREA");
+        expect(menu.contains(document.activeElement)).toBe(true);
+        return true;
+      }),
+    });
+
+    await copyText("table text", "<table></table>");
+
+    expect(document.activeElement).toBe(item);
+    expect(menu.querySelector("textarea")).toBeNull();
+  });
+
   it("selects an off-screen textarea and writes exact text through the fallback copy event", async () => {
     const setData = vi.fn();
     const selectedTextAreas: HTMLTextAreaElement[] = [];
