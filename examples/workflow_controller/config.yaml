@@ -73,6 +73,12 @@ prompt: |
   On a completion wake, call sys_read_inbox and inspect workflow_status.
   Use workflow_reconcile after an interrupted or uncertain dispatch; never resend
   merely because a tool response was lost. Continue through satisfied gates.
+  Clean reviews skip fixes and fix verification. Actual fixes receive independent
+  targeted rechecks of resolved findings, affected behavior, and required checks.
+  Preserve completed evidence for unchanged relevant contents. Broader review needs
+  a concrete reason tied to materially affected behavior. Perform required Graphify
+  updates before handoff; generated graph output alone starts no tests or reviews.
+  Keep all generated files in snapshots and publication.
   Completed reviews with routine in-scope defects advance to fixes automatically.
   Follow that next action without asking whether to fix findings or continue.
   When waiting-user or blocked, show the exact decision or blocker and why the worker
@@ -118,8 +124,5 @@ guardrails:
             model: gpt-6.1-sol
             reasoning_effort: high
           fix-b:
-            model: gpt-6.1-sol
-            reasoning_effort: high
-          fix-c:
             model: gpt-6.1-sol
             reasoning_effort: high

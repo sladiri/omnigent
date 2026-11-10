@@ -70,7 +70,7 @@ def _save(path: Path, value: dict[str, Any]) -> None:
     Path(handle.name).replace(path)
 
 
-def workflow_snapshot(workspace: str) -> str:
+def workflow_snapshot(workspace: str, baseline: str = "") -> str:
     """Hash tracked and nonignored untracked working files, including executable bits."""
     root = _workspace(workspace)
     index = _git(root, "ls-files", "--stage")
@@ -78,28 +78,46 @@ def workflow_snapshot(workspace: str) -> str:
         raise ValueError("Submodule worktrees require an explicit verification policy")
     paths = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
     digest = hashlib.sha256()
+    files = {}
+
+    def update(value: bytes) -> None:
+        digest.update(value)
+        entry.update(value)
+
     for name in sorted(set(paths.split("\0")) - {""}):
         path = root / name
         if not path.exists() and not path.is_symlink():
             continue
         mode = path.lstat().st_mode
+        entry = hashlib.sha256()
+
         encoded_name = name.encode("utf-8", errors="surrogateescape")
-        digest.update(len(encoded_name).to_bytes(8) + encoded_name)
+        update(len(encoded_name).to_bytes(8) + encoded_name)
         if stat.S_ISLNK(mode):
             content = os.fsencode(os.readlink(path))
-            digest.update(b"link\0" + len(content).to_bytes(8) + content)
+            update(b"link\0" + len(content).to_bytes(8) + content)
         elif stat.S_ISREG(mode):
-            digest.update(b"executable\0" if mode & stat.S_IXUSR else b"file\0")
-            digest.update(path.stat().st_size.to_bytes(8))
+            update(b"executable\0" if mode & stat.S_IXUSR else b"file\0")
+            update(path.stat().st_size.to_bytes(8))
             with path.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+                    update(chunk)
         else:
             raise ValueError(f"Unsupported worktree entry: {name}")
-        digest.update(b"\0")
+        update(b"\0")
+        files[name] = entry.hexdigest()
+    scope = {}
+    if baseline:
+        changed = set(
+            _git(root, "diff", "--name-only", "--no-renames", "-z", baseline, "--").split("\0")
+        )
+        untracked = set(paths.split("\0")) - set(_git(root, "ls-files", "-z").split("\0"))
+        scope["baseline_paths"] = sorted((changed | untracked) - {""})
     return json.dumps(
         {
             "revision": digest.hexdigest(),
+            "files": files,
+            **scope,
             "head": _git(root, "rev-parse", "HEAD"),
             "branch": _git(root, "branch", "--show-current"),
             "dirty": bool(_git(root, "status", "--porcelain")),

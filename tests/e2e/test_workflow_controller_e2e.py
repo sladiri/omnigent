@@ -379,12 +379,6 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         ("fix-a",),
         ("verify-a",),
         ("review-b-standards", "review-b-spec"),
-        ("fix-b",),
-        ("verify-b-standards", "verify-b-spec"),
-        ("review-c",),
-        ("fix-c",),
-        ("verify-c",),
-        ("final-b-standards", "final-b-spec"),
     )
     if review:
         groups = groups[1:]
@@ -430,8 +424,16 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                         },
                     )
                 )
-            if stage == "fix-a":
+            if stage in {"fix-a", "verify-a"}:
                 report["resolved"] = ["wording"]
+            if stage == "fix-a":
+                child_calls.append(
+                    _tool(
+                        "sys_os_write",
+                        "fix-write",
+                        {"path": str(workspace / "greeting.txt"), "content": "hello!\n"},
+                    )
+                )
             child_calls.append(
                 _tool("sys_os_read", f"{stage}-read", {"path": str(workspace / "greeting.txt")})
             )
@@ -496,7 +498,11 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 and item.get("type") == "function_call_output"
             )
             assert "hello" in read and "error" not in read.lower(), read
-            assert (workspace / "greeting.txt").read_text() == "hello\n", child_items
+            assert (workspace / "greeting.txt").read_text() == (
+                "hello!\n"
+                if stage in {"fix-a", "verify-a"} or stage.startswith("review-b-")
+                else "hello\n"
+            ), child_items
             if stage == "implement":
                 outside = next(
                     item["output"]
@@ -527,7 +533,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 )
                 assert _status(paused, "review-paused-status") == state
                 answered = parent_turn(
-                    "/workflow answer Keep hello without punctuation",
+                    "/workflow answer Use hello with an exclamation mark",
                     [
                         snapshot("review-answer-snapshot"),
                         _tool("workflow_status", "review-answer-status"),
@@ -536,7 +542,12 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 )
                 resumed = _status(answered, "review-answer-status")
                 assert resumed["status"] == "ready" and resumed["current"] == "a/fix-a"
-        assert (repository / "greeting.txt").read_text() == ("hello\n" if review else "before\n")
+        expected = "before\n"
+        if review:
+            expected = (
+                "hello!\n" if marker in {"fix-a", "verify-a", "review-b-standards"} else "hello\n"
+            )
+        assert (repository / "greeting.txt").read_text() == expected
         assert not publication_record.exists()
 
     if compare:
@@ -553,7 +564,12 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                     "behavior": "Greeting is hello",
                     "tradeoffs": "Small direct change",
                     "limitations": "English only",
-                    "evidence": ["a/implement", "a/final-b-standards", "a/final-b-spec"],
+                    "evidence": [
+                        "a/implement",
+                        "a/review-a",
+                        "a/review-b-standards",
+                        "a/review-b-spec",
+                    ],
                 },
                 {
                     "id": "b",
@@ -1071,6 +1087,7 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
                 {
                     STATE_KEY: {
                         "status": "running",
+                        "scheduler_version": 2,
                         "current": "one/implement",
                         "attempt": 1,
                         "definition": {"run_id": sid, "publish": False},

@@ -609,3 +609,47 @@ def test_review_checkout_rejects_refs_changed_during_fetch(review_pr):
         operations.workflow_review_checkout(str(repository), metadata["url"])
     assert not setup
     assert len(operations._worktrees(repository)) == 1
+
+
+def test_graph_files_remain_in_snapshot_and_publication_integrity(repository: Path) -> None:
+    before = _snapshot(repository)
+    generated = repository / "graphify-out"
+    generated.mkdir()
+    (generated / "graph.json").write_text('{"nodes": []}\n')
+    graph_only = _snapshot(repository)
+    assert graph_only["revision"] != before["revision"]
+    assert graph_only["files"]["hello.txt"] == before["files"]["hello.txt"]
+    assert set(graph_only["files"]) - set(before["files"]) == {"graphify-out/graph.json"}
+    (repository / "hello.txt").write_text("changed source\n")
+    mixed = _snapshot(repository)
+    assert mixed["files"]["hello.txt"] != graph_only["files"]["hello.txt"]
+    assert (
+        mixed["files"]["graphify-out/graph.json"] == graph_only["files"]["graphify-out/graph.json"]
+    )
+    (generated / "graph.json").unlink()
+    assert "graphify-out/graph.json" not in _snapshot(repository)["files"]
+
+
+def test_baseline_scope_includes_committed_staged_unstaged_untracked_and_deleted(repository: Path):
+    baseline = operations._git(repository, "rev-parse", "HEAD")
+    generated = repository / "graphify-out"
+    generated.mkdir()
+    (generated / "graph.json").write_text("generated\n")
+    assert json.loads(operations.workflow_snapshot(str(repository), baseline))[
+        "baseline_paths"
+    ] == ["graphify-out/graph.json"]
+    (repository / "committed.py").write_text("committed\n")
+    operations._git(repository, "add", ".")
+    operations._git(repository, "-c", "commit.gpgsign=false", "commit", "-m", "candidate")
+    (repository / "staged.py").write_text("staged\n")
+    operations._git(repository, "add", "staged.py")
+    (repository / "hello.txt").unlink()
+    (repository / "new.py").write_text("untracked\n")
+    snapshot = json.loads(operations.workflow_snapshot(str(repository), baseline))
+    assert snapshot["baseline_paths"] == [
+        "committed.py",
+        "graphify-out/graph.json",
+        "hello.txt",
+        "new.py",
+        "staged.py",
+    ]

@@ -113,7 +113,7 @@ Omnigent installation containing `omnigent.workflows`.
 ### Model and reasoning effort
 
 The bundle defaults the coordinator to GPT-6 Astra/high. All exploration,
-comparison, review, verification, and final review workers use Astra/xhigh.
+comparison, review, and verification workers use Astra/xhigh.
 Implementation and fix workers use GPT-6.1 Sol/high. Journaling and publication
 keep their existing tools and callers; no extra helper sessions are created.
 The controller's model and effort remain the session's launch selection.
@@ -138,16 +138,14 @@ stages:
 Fields merge with the bundle settings; each named stage overrides worker defaults.
 Use exact stage names: `explore`, `compare-results`, `implement`, `review-a`,
 `fix-a`, `verify-a`, `review-b-standards`, `review-b-spec`, `fix-b`,
-`verify-b-standards`, `verify-b-spec`, `review-c`, `fix-c`, `verify-c`,
-`final-b-standards`, and `final-b-spec`. Unknown stages or settings are rejected.
+`verify-b-standards`, and `verify-b-spec`. Unknown stages or settings are rejected.
 Models must be available to the worker's Codex account; effort must be supported
 by that model. The native harness validates the selected model/effort pair.
 
 The resolved configuration is saved with the approved draft and workflow run.
 Each fresh worker gets its stage's model and effort. Resume and reconciliation
 reuse existing workers without changing either setting. A retry creates a new
-worker with the saved stage settings. Older runs without these fields retain
-their existing inheritance behavior. Reinstalling the bundle changes defaults
+worker with the saved stage settings. Reinstalling the bundle changes defaults
 for new runs, not settings already saved in a run. Model selection does not
 guarantee prompt-cache hits.
 
@@ -205,7 +203,7 @@ Use `publish: false` to stop with the selected reviewed worktree. To publish lat
 send `/workflow publish <selected-id>` in the same chat (for Review, normally
 `/workflow publish current`). This explicitly authorizes the existing signed
 commit, push, and PR stages. It does not authorize merge or deployment.
-The controller rechecks the reviewed contents; changes require fresh reviews and
+The controller rechecks the reviewed contents; relevant changes require fresh reviews and
 selection. Ordinary messages and worker output cannot grant this permission.
 Commit-only requests do not authorize this command. Starting a run
 does not authorize merging or deployment.
@@ -224,17 +222,15 @@ it must not override repository instructions requiring local setup.
 
 ## Stages and evidence
 
-Each candidate completes this sequence. Review skips only `implement`:
+Each candidate receives three review roles. Review skips `implement`:
 
 ```text
 implement
-review-a -> fix-a -> verify-a
-(review-b-standards + review-b-spec) -> fix-b -> (verify-b-standards + verify-b-spec)
-review-c -> fix-c -> verify-c
-final-b-standards + final-b-spec
+review-a (Ponytail)
+review-b-standards + review-b-spec (independent parallel workers)
 ```
 
-A and C use the installed `ponytail` and `ponytail-review` skills. B uses the
+A uses the installed `ponytail` and `ponytail-review` skills. B uses the
 installed `code-review` skill. The worker's
 `agents/worker/config.yaml` lists each allowed global skill directory under
 `os_env.sandbox.read_paths`. It includes the current installations under
@@ -252,23 +248,62 @@ stage. Reviews inspect the complete
 working-tree change and connected code against the saved baseline. They do not
 require an intermediate commit.
 
-Each fix accounts for every outstanding finding. Its verification stage checks
-the resulting code. `final-b` rechecks Standards and Spec after the final C fixes.
-Routine review defects advance automatically to their fix stage without a question.
-Unresolved verification findings loop back to their fix stage,
-subject to the configured attempt limit. A successful turn or an idle worker is
-not a passed gate: the controller requires structured evidence, including explicit
-`findings` and `resolved` lists on every `COMPLETE` report.
+Clean reviews start no fix or verification workers. Actionable findings route to
+`fix-a` or `fix-b`. Each actual fix receives an independent targeted recheck
+(`verify-a`, or the B axes that reported findings). Rechecks confirm resolutions,
+affected behavior, and checks required for the actual change. They retain
+unresolved findings and loop back to fixes within the attempt limit. A fix that
+changes no relevant contents cannot resolve source findings. Graphify housekeeping
+findings must include generated `paths`. When every outstanding finding names
+only generated graph files and only those files changed, the controller accepts
+the update without test or review verification. Missing finding paths receive
+the normal source-finding safeguards.
 
-Content snapshots include tracked, untracked, staged, and unstaged working files
-and executable bits. A changed revision invalidates affected review evidence.
-The selected revision is checked again before publication. Snapshots detect file
-changes; review quality still depends on the reviewers and their recorded checks.
+Completed review evidence is retained. Full reviews reopen only when a targeted
+recheck reports `reopen_reviews: [{role, reason, paths}]` for a material effect on
+previously reviewed behavior. The controller requires an existing review role,
+a nonempty concrete reason, and affected paths from the actual fix. It persists
+the reason and scheduling decision. Unexpected non-graph edits outside a fix
+invalidate the previous reviews conservatively. No final full review repeats.
+
+Implementation and fix workers perform required Graphify updates before handoff.
+Host snapshots record per-path fingerprints. The controller compares them and
+recognizes generated Graphify artifacts. Changes only to those artifacts preserve
+code-review and test evidence and start no tests, graph validation, or review
+workers. Source, tests, build configuration, instructions (including instruction
+files inside graphify-out), and mixed changes retain their applicable checks.
+Unknown path evidence never qualifies for the Graphify-only exemption.
+
+Content snapshots still include generated graph files, tracked and nonignored
+untracked files, staged and unstaged working contents, symlinks, and executable
+bits. The full publication hash changes when generated files change; only review
+scheduling receives the exemption. Selection rechecks this full snapshot. Graph-only
+updates retain selection and update the authorized publication snapshot. Mixed or
+non-graph changes require review and selection again.
+
+Findings, original reports, targeted recheck evidence, snapshot fingerprints, and
+scheduling decisions are saved in session state across pause/resume and restart.
+All applicable review roles and all existing user and publication gates are
+required for completion. The host also compares the working contents with the
+saved Git baseline, including nonignored untracked files. A candidate whose
+entire task diff is generated Graphify output has no applicable code reviews.
+Missing baseline path evidence keeps all three reviews required. Explicitly accepted
+exceptions stay in saved decisions; the controller adds none.
+
+New runs use scheduler version 2. Existing in-progress runs retain their state and
+worker settings; this change does not migrate, repair, or advance them. New worker
+dispatch from a previous-scheduler run is refused. Complete such a run with its
+original runtime, or start a new workflow after preserving its work and decisions.
+Retired C and final-B stages cannot be dispatched. No finish or override action is
+provided. Updating the installed bundle alone does not reload imported Python
+policy code. Activate the code and bundle in both server and host on the next
+user-controlled restart, then create a new workflow. Do not restart shared services
+as part of verification.
 
 ## Questions, selection, and recovery
 
-All workflows separate review from fixing. Every initial review, verification,
-and final review routes actionable defects within the approved scope to fixes.
+All workflows separate review from fixing. Every initial review and verification
+routes actionable defects within the approved scope to fixes.
 Only real decisions, missing information, conflicting instructions, additional
 authorization, or missing capabilities pause dependent work. Questions identify
 what is needed and why the worker cannot proceed. The parallel Standards and Spec
@@ -300,7 +335,8 @@ Unrelated messages, runtime wakes, and goal continuations are not answers. `/wor
 review decision; it only retries a blocked terminal stage after you resolve its
 blocker. Automatic attempts are bounded by `max_attempts` in config. An explicit
 Answer, retry, or reconciled retry-dispatch permits one additional attempt of the
-same stage, including its paired reviewer. This permission survives restart and
+same stage. Completed parallel siblings are reused when relevant contents are
+unchanged. This permission survives restart and
 is consumed by dispatch. It does not reset the attempt history, approve a new
 design, or bypass a review or publication gate.
 To abandon a candidate blocked or waiting at review, send
@@ -359,7 +395,13 @@ must be answered through their native UI.
 Run in the repository's development environment:
 
 ```sh
-/usr/bin/env uv run --no-sync pytest tests/policies/test_workflow_controller.py tests/policies/test_workflow_comparison.py tests/tools/test_workflow_operations.py tests/e2e/test_workflow_controller_e2e.py -v
+/usr/bin/env uv run --no-sync pytest \
+  tests/policies/test_workflow_controller.py \
+  tests/policies/test_workflow_comparison.py \
+  tests/policies/test_workflow_review_scheduling.py \
+  tests/tools/test_workflow_operations.py \
+  tests/e2e/test_workflow_controller_e2e.py \
+  tests/e2e/test_workflow_review_routing_e2e.py -v
 ```
 
 The tests use temporary repositories, a real isolated server and runner, and a
