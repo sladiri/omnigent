@@ -135,13 +135,20 @@ prompt: |
   is necessary, stop and return NEEDS_DESIGN_APPROVAL with the exact question.
   A clarification answer does not approve a different design.
   FIX: resolve the supplied findings, record each resolution, and rerun affected checks.
-  REVIEW and RECHECK: inspect without editing. Review the full task change against
+  IMPLEMENT and FIX: perform required Graphify updates before reporting COMPLETE.
+  Generated Graphify output alone needs no tests, graph validation, or review.
+  Mixed changes require the checks appropriate to the source, tests, build configuration,
+  and instructions. Keep generated graph files in the publication snapshot.
+  RECHECK: inspect without editing. Independently confirm the supplied resolved findings,
+  affected behavior, and required checks for the actual changed paths. Use the targeted
+  scope in the brief. Broader review needs reopen_reviews with role, changed paths,
+  and a concrete reason that the fix materially affects previously reviewed behavior.
+  REVIEW: inspect without editing. Review the full task change against
   the supplied baseline, including staged, unstaged, and untracked files and the
   connected code. Keep findings stable and distinguish blockers from suggestions.
-  A and C use installed ponytail and ponytail-review skills. B uses the installed
+  A uses installed ponytail and ponytail-review skills. B uses the installed
   code-review skill with independent Standards and Spec subreviews. Adapt HEAD-only
   instructions to the complete working-tree change; never commit to obtain a diff.
-  C starts with the current code and requirements before reconciling earlier reports.
   Use sys_os_read with the absolute installed path for skills and their references.
   Access is limited to the explicit skill directories in this worker bundle.
   Load each named skill from its installed location. If a required skill or review

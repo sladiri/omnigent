@@ -66,12 +66,13 @@ def brief(state: Json) -> str:
         "Separate measured results from judgment. COMPLETE also needs results: a list of "
         "{id, behavior, tradeoffs, limitations, evidence}, where evidence is a list of "
         "completed stage keys for that design (empty for unimplemented designs). Cite "
-        "the implementation and both final-b axes for verified designs. "
+        "the implementation and every applicable review role for verified designs. "
         "recommendation: {id, reasons} must name "
         "a verified design, or id: null if none succeeded. Explain all exclusions.\n"
         f"Proposals and implementation decisions: {json.dumps(state['designs'])}\n"
         f"Candidates: {json.dumps(state['candidates'])}\n"
         f"Verified revisions: {json.dumps(state['verified'])}\n"
+        f"Applicable review roles: {json.dumps(state.get('applicable_reviews', {}))}\n"
         f"Rejected or unsuccessful: {json.dumps(state.get('rejected', {}))}\n"
         f"Measured stage evidence: {json.dumps(state['completed'])}\n"
         f"Incomplete stage evidence: {json.dumps(state.get('incomplete', {}))}"
@@ -146,13 +147,14 @@ def accept(state: Json, report: Json) -> None:
                 for key in evidence
             ):
                 raise ValueError("Results must reference recorded evidence for that design")
+            required = state.get("applicable_reviews", {}).get(
+                identifier, ["review-a", "review-b-standards", "review-b-spec"]
+            )
             if identifier in state["verified"] and not {
-                identifier + "/implement",
-                identifier + "/final-b-standards",
-                identifier + "/final-b-spec",
+                identifier + "/" + stage for stage in ("implement", *required)
             }.issubset(evidence):
                 raise ValueError(
-                    "Verified results must cite implementation and both final reviews"
+                    "Verified results must cite implementation and all applicable reviews"
                 )
         _recommendation(report, set(state["verified"]))
         state["result_comparison"] = {
@@ -258,6 +260,12 @@ def command(state: Json, text: str) -> bool:
         verified={},
         findings={},
         fix_attempts={},
+        reviews={},
+        finding_roles={},
+        finding_paths={},
+        rechecks=[],
+        snapshots={},
+        applicable_reviews={},
         rejected={},
         incomplete={},
         selected=None,
@@ -266,6 +274,8 @@ def command(state: Json, text: str) -> bool:
     )
     state.pop("result_comparison", None)
     state.pop("publication_input", None)
+    state.pop("retained_checks", None)
+    state.pop("fix_context", None)
     return True
 
 

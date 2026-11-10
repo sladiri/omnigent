@@ -230,13 +230,28 @@ async def begin(probe, publish=True, ids=("one",), workflow="implement-review-fi
     await snapshot(probe)
 
 
-async def snapshot(probe, revision="tree-1"):
+async def snapshot(probe, revision=None, files=None):
+    revision = revision or probe.state.get("revision", "tree-1")
     await probe.evaluate(
-        output("workflow_snapshot", {"revision": revision, "branch": "candidate"})
+        output(
+            "workflow_snapshot",
+            {
+                "revision": revision,
+                "branch": "candidate",
+                "files": files if files is not None else {"source.py": revision},
+            },
+        )
     )
 
 
-async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE", question=None):
+async def finish(
+    probe, findings=None, revision=None, outcome="COMPLETE", question=None, extra=None
+):
+    revision = revision or (
+        probe.state["revision"] + "-fixed"
+        if probe.state["current"].split("/")[-1].startswith("fix-")
+        else probe.state["revision"]
+    )
     dispatch = (await probe.evaluate(_call())).data
     assert dispatch and dispatch["title"].startswith(probe.state["current"])
     second = (await probe.evaluate(_call())).data if probe.state.get("parallel") else None
@@ -250,6 +265,7 @@ async def finish(probe, findings=None, revision="tree-1", outcome="COMPLETE", qu
         "subagent": {"status": "completed", "work_id": "work-" + dispatch["title"]},
     }
     report = {
+        **(extra or {}),
         "stage": probe.state["current"],
         "outcome": outcome,
         "evidence": "Checks passed",
@@ -290,7 +306,9 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
     await begin(coding, workflow=workflow, publish=not late_publish)
     assert (await coding.evaluate(_request("/workflow publish one"))).action == PolicyAction.DENY
     titles = []
-    stages = STAGES[1:] if workflow == "review-fix" else STAGES
+    stages = ("review-a", "review-b-standards", "review-b-spec")
+    if workflow != "review-fix":
+        stages = ("implement", *stages)
     for stage in stages:
         if stage.endswith("-b-spec"):
             continue
@@ -298,7 +316,7 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
         assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
         request = await finish(coding)
         titles.append(request["args"]["title"])
-    assert len(set(titles)) == (10 if workflow == "review-fix" else 11)
+    assert len(set(titles)) == (2 if workflow == "review-fix" else 3)
     assert set(coding.state["completed"]) == {"one/" + stage for stage in stages}
     assert coding.state["status"] == "waiting-user"
     await coding.evaluate(_request("worker suggests /workflow select one"))
@@ -375,34 +393,28 @@ async def test_findings_require_resolution_and_failed_recheck_loops_to_fix(codin
 
 
 @pytest.mark.asyncio
-async def test_final_b_findings_rerun_b_and_c_on_the_fixed_revision(coding):
+async def test_b_fix_targeted_rechecks_retain_a_without_final_repeat(coding):
     await begin(coding)
-    revision = "tree-1"
-    while coding.state["current"] != "one/final-b-standards":
-        if coding.state["current"] == "one/fix-c":
-            revision = "tree-after-c"
-        await finish(coding, revision=revision)
-    await finish(
-        coding, findings=[{"id": "regression", "message": "C broke B"}], revision=revision
-    )
-    assert coding.state["status"] == "ready"
-    assert coding.state["question"] is None
+    await finish(coding)
+    await finish(coding)
+    original = coding.state["completed"]["one/review-a"]
+    await finish(coding, findings=[{"id": "regression", "message": "Missing validation"}])
     assert coding.state["current"] == "one/fix-b"
-    assert coding.state["verified"] == {}
-    revision = "tree-fixed"
-    for expected in (
-        "fix-b",
-        "verify-b-standards",
-        "review-c",
-        "fix-c",
-        "verify-c",
-        "final-b-standards",
-    ):
-        assert coding.state["current"] == "one/" + expected
-        await finish(coding, revision=revision)
-    assert coding.state["verified"] == {"one": revision}
-    for stage in ("verify-c", "final-b-standards", "final-b-spec"):
-        assert coding.state["completed"]["one/" + stage]["revision"] == revision
+    await finish(coding, revision="tree-fixed")
+    assert coding.state["current"] == "one/verify-b-standards"
+    assert coding.state["rechecks"] == ["verify-b-standards", "verify-b-spec"]
+    await finish(coding)
+    assert coding.state["verified"] == {"one": "tree-fixed"}
+    assert coding.state["completed"]["one/review-a"] == original
+    assert set(coding.state["completed"]) == {
+        "one/implement",
+        "one/review-a",
+        "one/review-b-standards",
+        "one/review-b-spec",
+        "one/fix-b",
+        "one/verify-b-standards",
+        "one/verify-b-spec",
+    }
 
 
 @pytest.mark.asyncio
@@ -423,7 +435,7 @@ async def test_question_wait_and_read_only_revision_change(coding):
 @pytest.mark.parametrize("late_publish", [False, True])
 async def test_selection_invalidates_changed_candidate(coding, late_publish):
     await begin(coding, publish=not late_publish)
-    for _ in STAGES:
+    for _ in ("implement", "review-a", "review-b-standards"):
         if _.endswith("-b-spec"):
             continue
         await finish(coding)
@@ -471,7 +483,7 @@ async def test_uncertain_dispatch_requires_reconcile_before_explicit_retry(codin
 @pytest.mark.asyncio
 async def test_parallel_axes_wait_for_both_and_accept_reverse_completion_order(coding):
     await begin(coding)
-    for _ in range(4):
+    for _ in range(2):
         await finish(coding)
     standards = await coding.dispatch()
     spec = await coding.dispatch()
@@ -484,7 +496,8 @@ async def test_parallel_axes_wait_for_both_and_accept_reverse_completion_order(c
     await coding.evaluate(_completion(standards["title"], child_id="standards-child"))
     assert coding.state["status"] == "snapshot"
     await snapshot(coding)
-    assert coding.state["current"] == "one/fix-b"
+    assert coding.state["current"] is None
+    assert coding.state["status"] == "waiting-user"
     assert all(
         "one/review-b-" + axis in coding.state["completed"] for axis in ("standards", "spec")
     )
@@ -589,6 +602,8 @@ async def test_explicit_retry_exceeds_limit_once_without_advancing_gates(coding,
     state = coding.state
     state.update(current=f"one/{stage}", attempt=1 if stage == "fix-a" else 4, dispatch_serial=3)
     state["fix_attempts"][state["current"]] = 2
+    if stage.startswith("fix-"):
+        state["findings"] = {"bug": "Missing validation"}
     coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state["status"] == "blocked"
@@ -627,7 +642,7 @@ async def test_explicit_retry_exceeds_limit_once_without_advancing_gates(coding,
 @pytest.mark.asyncio
 async def test_second_parallel_child_failure_cannot_bypass_reconciliation(coding):
     await begin(coding)
-    for _ in range(4):
+    for _ in range(2):
         await finish(coding)
     standards, spec = await coding.dispatch(), await coding.dispatch()
     await coding.evaluate(_completion(standards["title"]))
@@ -641,7 +656,7 @@ async def test_second_parallel_child_failure_cannot_bypass_reconciliation(coding
 @pytest.mark.asyncio
 async def test_candidates_are_sequential_and_only_user_can_reject_blocked_candidate(coding):
     await begin(coding, publish=False, ids=("one", "two"))
-    for stage in STAGES:
+    for stage in ("implement", "review-a", "review-b-standards"):
         if not stage.endswith("-b-spec"):
             await finish(coding)
     assert coding.state["current"] == "two/implement"
@@ -810,7 +825,7 @@ async def test_rechecking_selection_preserves_rejected_candidates(coding):
     await coding.evaluate(_request("/workflow select one"))
     await snapshot(coding, "changed-after-selection")
     await snapshot(coding, "changed-after-selection")
-    for stage in STAGES[1:]:
+    for stage in ("review-a", "review-b-standards"):
         if not stage.endswith("-b-spec"):
             await finish(coding, revision="changed-after-selection")
     assert coding.state["status"] == "waiting-user"
@@ -823,7 +838,7 @@ async def test_rechecking_selection_preserves_rejected_candidates(coding):
 @pytest.mark.parametrize("bad_findings", [None, "none", [{"id": "broken"}]])
 async def test_invalid_parallel_report_cannot_leave_half_accepted_evidence(coding, bad_findings):
     await begin(coding)
-    for _ in range(4):
+    for _ in range(2):
         await finish(coding)
     standards, spec = await coding.dispatch(), await coding.dispatch()
     await coding.evaluate(_completion(standards["title"], child_id="standards-child"))
@@ -837,20 +852,21 @@ async def test_invalid_parallel_report_cannot_leave_half_accepted_evidence(codin
     await coding.evaluate(ctx)
     await snapshot(coding)
     assert coding.state["status"] == "waiting-user"
-    assert not any(key.startswith("one/review-b-") for key in coding.state["completed"])
+    assert "one/review-b-standards" in coding.state["completed"]
+    assert "one/review-b-spec" not in coding.state["completed"]
     assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
     await coding.evaluate(_request("/workflow answer Repeat the review with valid evidence"))
     await snapshot(coding)
     retry = await coding.dispatch()
-    assert "standards" in retry["title"]
-    assert coding.state["parallel"]["next"] == "one/review-b-spec"
+    assert "spec" in retry["title"]
+    assert "parallel" not in coding.state
 
 
 @pytest.mark.asyncio
 async def test_goal_brief_is_unabridged_and_bound_to_each_parallel_worker(coding, monkeypatch):
     monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
     await begin(coding)
-    for _ in range(4):
+    for _ in range(2):
         await finish(coding)
     for axis in ("standards", "spec"):
         dispatch = await coding.dispatch()
@@ -1316,6 +1332,13 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
         current=stage if stage in {"explore", "compare-results"} else "one/" + stage,
         status="ready",
     )
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+    if stage.startswith("fix-"):
+        state["findings"] = {"bug": "Missing validation"}
+    if stage.startswith("verify-"):
+        state["rechecks"] = [stage]
+        if stage.endswith("standards"):
+            state["rechecks"].append("verify-b-spec")
     coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     dispatch = await coding.dispatch()
     implementation = stage == "implement" or stage.startswith("fix-")

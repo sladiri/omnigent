@@ -274,8 +274,9 @@ async def test_final_comparison_requires_actual_evidence_and_separate_selection(
                 "limitations": "English only",
                 "evidence": [
                     "simple/implement",
-                    "simple/final-b-standards",
-                    "simple/final-b-spec",
+                    "simple/review-a",
+                    "simple/review-b-standards",
+                    "simple/review-b-spec",
                 ],
             },
             {
