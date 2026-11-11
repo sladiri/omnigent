@@ -440,13 +440,58 @@ async def test_failed_candidates_are_compared_but_never_selectable(coding):
 
 
 @pytest.mark.asyncio
-async def test_clarification_during_exploration_resumes_exploration_only(coding):
+@pytest.mark.parametrize("selection", ["select simple", "all"])
+async def test_clarification_and_design_approval_reach_worker_after_restart(
+    coding, db_uri, monkeypatch, selection
+):
+    monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
     await start(coding)
     dispatch = await coding.dispatch()
     await report(coding, dispatch, {"outcome": "NEEDS_INPUT", "question": "What latency target?"})
     assert coding.state["status"] == "waiting-user"
-    await coding.evaluate(_request("/workflow answer Under one second"))
+    answer = "Under one second. Present designs for selection; do not implement."
+    await coding.evaluate(_request("/workflow answer " + answer))
     assert coding.state["current"] == "explore" and coding.state["status"] == "ready"
+    assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
+    assert answer in analysis_brief(coding.state)
+    await explore(coding)
+    await present(coding)
+    command = "/workflow designs 1 " + selection
+    await coding.evaluate(_request(command))
+    await prepare(coding)
+    saved = coding.state
+    coding.store = SqlAlchemyConversationStore(db_uri)
+    assert coding.state == saved
+    dispatch = await coding.dispatch()
+    child = coding.store.create_conversation(
+        title="worker:" + dispatch["title"], parent_conversation_id=coding.session_id
+    )
+    engine = build_policy_engine(
+        spec=coding.spec, conversation_id=child.id, conversation_store=coding.store
+    )
+    brief = (await engine.evaluate(output("workflow_stage", "stub"))).data
+    assert command in brief
+    assert "Implementation approval for simple: proposal revision 1" in brief
+    assert "User answer:" not in brief
+    assert answer in brief and '"stage": "explore"' in brief
+    assert "question and stage" in brief
+    assert "publication authorization" in brief
+    assert coding.state["selected"] is None
+    assert coding.state["definition"]["publish"] is False
+    assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+    await report(
+        coding,
+        dispatch,
+        {
+            "stage": "simple/implement",
+            "outcome": "NEEDS_DESIGN_APPROVAL",
+            "question": "Use a different design?",
+        },
+    )
+    assert coding.state["status"] == "waiting-design-revision"
+    assert (await coding.evaluate(_request("/workflow answer yes"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow designs 1 revise Change design"))
+    assert "Implementation approval for" not in analysis_brief(coding.state)
     assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
 
 
