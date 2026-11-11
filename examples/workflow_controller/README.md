@@ -116,7 +116,7 @@ Omnigent installation containing `omnigent.workflows`.
 
 ### Model and reasoning effort
 
-The bundle defaults the coordinator to GPT-6 Astra/high. All exploration,
+The bundle defaults the coordinator to GPT-6.1 Sol/high. All exploration,
 comparison, review, and verification workers use Astra/xhigh.
 Implementation and fix workers use GPT-6.1 Sol/high. Journaling and publication
 keep their existing tools and callers; no extra helper sessions are created.
