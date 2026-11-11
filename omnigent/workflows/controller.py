@@ -133,6 +133,9 @@ def _github_permission(event: PolicyEvent) -> PolicyResponse | None:
         "mcp__codex_apps__github_",
         "mcp__github__",
         "github__",
+        "mcp__GitHub__",
+        "mcp__GitHub_",
+        "GitHub__",
     )
     target = str(event.get("target", ""))
     for prefix in prefixes:

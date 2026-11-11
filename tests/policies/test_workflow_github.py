@@ -9,7 +9,26 @@ from omnigent.workflows.controller import STAGES, STATE_KEY, make_controller
 from tests.policies.test_workflow_linear import STATES
 from tests.policies.test_workflow_linear import event as linear_event
 
-READS = ("get_pr_info", "fetch_pr", "fetch_pr_patch", "fetch_file", "search", "get_repo")
+PREFIXES = (
+    "mcp__codex_apps__github_",
+    "mcp__codex_apps__github__",
+    "mcp__github__",
+    "github__",
+    "mcp__GitHub__",
+    "mcp__GitHub_",
+    "GitHub__",
+)
+READS = (
+    "get_pr_info",
+    "fetch_pr",
+    "fetch_pr_patch",
+    "fetch_file",
+    "search",
+    "get_repo",
+    "pull_request_read",
+    "get_file_contents",
+    "list_pull_requests",
+)
 WRITES = (
     "create_branch",
     "create_file",
@@ -17,25 +36,28 @@ WRITES = (
     "merge_pull_request",
     "add_comment_to_issue",
     "add_review_to_pr",
+    "pull_request_review_write",
+    "delete_file",
     "unknown_operation",
 )
 
 
-def event(operation, separator, state, worker=False):
-    raw = linear_event(operation, separator, state, worker)
-    raw["target"] = raw["target"].replace("__linear", "__github")
+def event(operation, prefix, state, worker=False):
+    raw = linear_event(operation, "__", state, worker)
+    raw["target"] = prefix + operation
+    raw["data"]["arguments"] = {"owner": "org", "repo": "repo", "method": "get", "pullNumber": 378}
     raw["data"]["name"] = raw["target"]
     return raw
 
 
-@pytest.mark.parametrize("separator", ["_", "__"])
+@pytest.mark.parametrize("prefix", PREFIXES)
 @pytest.mark.parametrize("status", STATES)
-def test_controller_github_reads_preserve_gates(status, separator):
+def test_controller_github_reads_preserve_gates(status, prefix):
     state = {"status": status, "draft": {"token": "saved"}, "question": "Choose"}
     original = copy.deepcopy(state)
     policy = make_controller()
     for operation in (*READS, *WRITES):
-        call = event(operation, separator, state)
+        call = event(operation, prefix, state)
         verdict = policy(call)
         assert verdict["result"] == ("ALLOW" if operation in READS else "DENY"), operation
         assert not verdict.get("state_updates")
@@ -58,15 +80,20 @@ def test_github_workers_are_read_only_and_must_be_active(monkeypatch, stage):
         "omnigent.runtime.get_conversation_store",
         lambda: SimpleNamespace(get_conversation=sessions.get),
     )
-    for separator in ("_", "__"):
+    for prefix in PREFIXES:
         for operation in (*READS, *WRITES):
-            result = make_controller()(event(operation, separator, state, worker=True))
+            result = make_controller()(event(operation, prefix, state, worker=True))
             assert result["result"] == ("ALLOW" if operation in READS else "DENY")
     for status in STATES:
         if status == "running":
             continue
         state["status"] = status
-        assert make_controller()(event("fetch_file", "__", state, worker=True))["result"] == "DENY"
+        assert (
+            make_controller()(event("pull_request_read", "mcp__GitHub__", state, worker=True))[
+                "result"
+            ]
+            == "DENY"
+        )
 
 
 @pytest.mark.parametrize("status", STATES)
@@ -74,7 +101,7 @@ def test_pr_checkout_only_prepares_an_idle_review(status):
     policy = make_controller()
     for workflow in (None, "review-fix", "compare-review-fix", "implement-review-fix"):
         state = {"status": status, "requested_workflow": workflow}
-        raw = event("get_pr_info", "__", state)
+        raw = event("get_pr_info", "mcp__github__", state)
         raw["target"] = "workflow_review_checkout"
         raw["data"] = {
             "name": raw["target"],

@@ -176,6 +176,8 @@ branch, candidate branch, and publication permission. **Start workflow** submits
 `/workflow start-draft <token>` for that specific draft. New user instructions or
 a replacement draft invalidate the previous token. GitHub source, PR and discussion
 reads are available to the controller in every state and to active workers.
+Both the connected GitHub app and the `GitHub` MCP server are supported,
+including native hook names and JavaScript tool aliases.
 GitHub mutations remain blocked; publication still uses its separate gate.
 Only an idle Review controller may prepare a PR checkout. It requires an existing
 local repository whose origin matches the PR repository. Compare and Implement
