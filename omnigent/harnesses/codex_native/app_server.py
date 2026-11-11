@@ -1888,7 +1888,12 @@ async def probe_codex_model_options(
         raise ImportError("Native Codex model probing requires the 'codex' CLI on PATH.")
     config_overrides = list(launch.config_overrides)
     pinned_model = launch.model
-    env = _clean_codex_env()
+    passthrough_names = (
+        name.strip()
+        for name in os.environ.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
+        if name.strip() and name.strip() not in {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
+    )
+    env = _clean_codex_env(passthrough_names)
     if launch.profile is not None:
         databricks = await asyncio.to_thread(
             _databricks_launch_materialization,
@@ -3926,7 +3931,12 @@ def build_codex_native_server(
             "installed on a PATH the host daemon didn't inherit (e.g. an "
             "nvm-managed bin dir), set OMNIGENT_CODEX_PATH=/path/to/codex."
         )
-    env = _clean_codex_env()
+    passthrough_names = (
+        name.strip()
+        for name in os.environ.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
+        if name.strip() and name.strip() not in {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
+    )
+    env = _clean_codex_env(passthrough_names)
     config_overrides: list[str] = []
     pinned_model = model
     if profile is not None:
