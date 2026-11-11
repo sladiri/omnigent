@@ -118,8 +118,9 @@ Omnigent installation containing `omnigent.workflows`.
 
 The bundle defaults the coordinator to GPT-6.1 Sol/high. All exploration,
 comparison, review, and verification workers use Astra/xhigh.
-Implementation and fix workers use GPT-6.1 Sol/high. Journaling and publication
-keep their existing tools and callers; no extra helper sessions are created.
+Implementation workers use GPT-6.1 Sol/xhigh. Fix workers use GPT-6.1 Sol/high.
+Journaling and publication keep their existing tools and callers; no extra helper
+sessions are created.
 The controller's model and effort remain the session's launch selection.
 
 The bundle's `guardrails.policies.workflow.factory_params` declares
@@ -134,7 +135,7 @@ worker_defaults:
 stages:
   implement:
     model: gpt-6.1-sol
-    reasoning_effort: xhigh
+    reasoning_effort: high
   review-a:
     reasoning_effort: high
 ```
