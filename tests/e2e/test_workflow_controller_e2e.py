@@ -952,7 +952,8 @@ def test_bundled_draft_starts_requested_branch_only_after_user_approval(
 
 
 @pytest.mark.timeout(120)
-def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_path):
+@pytest.mark.parametrize("service", ["linear", "github"])
+def test_external_permissions_leave_persisted_states_unchanged_after_restart(tmp_path, service):
     from omnigent.cli import _bundle
     from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
     from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -962,7 +963,26 @@ def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_p
     from tests.policies.test_workflow_linear import STATES
 
     root = Path(__file__).resolve().parents[2]
-    bundle = _mock_bundle(tmp_path / "linear-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    bundle = _mock_bundle(tmp_path / "external-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    if service == "github":
+        from tests.policies.test_workflow_github import PREFIXES, READS, WRITES
+
+        prefixes = PREFIXES
+        operations = [(op, "ALLOW") for op in READS] + [(op, "DENY") for op in WRITES]
+        arguments = {"owner": "org", "repo": "repo", "method": "get", "pullNumber": 378}
+    else:
+        prefixes = ("mcp__codex_apps__linear_", "mcp__codex_apps__linear__")
+        operations = [
+            ("get_issue", "ALLOW"),
+            ("list_issue_statuses", "ALLOW"),
+            ("create_issue", "ALLOW"),
+            ("update_issue", "ALLOW"),
+            ("save_issue", "ALLOW"),
+            ("delete_issue", "DENY"),
+            ("save_comment", "DENY"),
+            ("save_project", "DENY"),
+        ]
+        arguments = {"id": "TEST-1"}
     with server_runner(tmp_path / "stack", server_cwd=root) as stack:
         with httpx.Client(base_url=stack.base_url, trust_env=False, timeout=30) as client:
             store = SqlAlchemyConversationStore(stack.database_uri)
@@ -987,32 +1007,23 @@ def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_p
                 sessions[sid] = state
             stack.restart_server()
             for sid, state in sessions.items():
-                for separator in ("_", "__"):
-                    for operation, verdict in (
-                        ("get_issue", "ALLOW"),
-                        ("list_issue_statuses", "ALLOW"),
-                        ("create_issue", "ALLOW"),
-                        ("update_issue", "ALLOW"),
-                        ("save_issue", "ALLOW"),
-                        ("delete_issue", "DENY"),
-                        ("save_comment", "DENY"),
-                        ("save_project", "DENY"),
-                    ):
-                        name = f"mcp__codex_apps__linear{separator}{operation}"
+                for prefix in prefixes:
+                    for operation, verdict in operations:
+                        name = prefix + operation
                         response = client.post(
                             f"/v1/sessions/{sid}/policies/evaluate",
                             json={
                                 "event": {
                                     "type": "PHASE_TOOL_CALL",
                                     "target": "",
-                                    "data": {"name": name, "arguments": {"id": "TEST-1"}},
+                                    "data": {"name": name, "arguments": arguments},
                                     "context": {},
                                 }
                             },
                         )
                         response.raise_for_status()
                         assert response.json()["result"] == "POLICY_ACTION_" + verdict
-                        # Only evaluate policy; never execute an external Linear tool.
+                        # Only evaluate policy; never execute an external service tool.
                         result = client.post(
                             f"/v1/sessions/{sid}/policies/evaluate",
                             json={
