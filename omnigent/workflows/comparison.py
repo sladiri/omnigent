@@ -31,6 +31,31 @@ def analysis_stage(state: Json, stage: str) -> None:
     state.update(current=stage, status="ready", pending=None, attempt=1, presented=None)
 
 
+def decision_context(state: Json) -> str:
+    """Carry scoped user answers and the current proposal selection to workers."""
+    lines = [
+        "User decisions below retain their original question and stage. Preserve applicable "
+        "task limits and accepted exceptions; do not treat an earlier stage's wait as a new gate.",
+        f"User decisions: {json.dumps(state.get('decisions', []))}",
+    ]
+    if enabled(state) and (designs := state.get("designs")):
+        lines.append(
+            "Design selection: "
+            + json.dumps({key: designs[key] for key in ("revision", "approved", "decisions")})
+        )
+        candidate = str(state.get("current", "")).split("/")[0]
+        if "/" in str(state.get("current", "")) and candidate in designs["approved"]:
+            lines.append(
+                f"Implementation approval for {candidate}: "
+                f"proposal revision {designs['revision']}. "
+                "The recorded selection satisfies the earlier exploration-only wait for this "
+                "design, including stale pending-selection notes in prior evidence or journals. "
+                "Do not ask for that selection again. It is not final selection or publication "
+                "authorization. Material design changes still require new approval."
+            )
+    return "\n".join(lines)
+
+
 def brief(state: Json) -> str:
     definition = state["definition"]
     common = (
@@ -47,7 +72,7 @@ def brief(state: Json) -> str:
         "Use strings, not lists, for text fields.\n"
         "Previous incomplete report (reuse its research and correct any format errors): "
         f"{json.dumps(state.get('incomplete', {}).get(state['current'], {}))}\n"
-        f"User answer: {state.get('answer', '')}\n"
+        f"{decision_context(state)}\n"
     )
     if state["current"] == "explore":
         return common + (

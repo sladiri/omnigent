@@ -724,8 +724,7 @@ def _brief(state: Json) -> str:
             f"Outstanding findings: {json.dumps(state.get('findings', {}))}",
             f"Incomplete evidence: {json.dumps(state.get('incomplete', {}))}",
             f"Prior evidence: {json.dumps(state['completed'])}",
-            f"User decisions: {json.dumps(state.get('decisions', []))}",
-            f"User answer: {state.get('answer', '')}",
+            comparison.decision_context(state),
         ]
     )
 

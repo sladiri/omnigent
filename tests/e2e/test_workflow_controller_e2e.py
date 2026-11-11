@@ -491,6 +491,21 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
             child_items = http_client.get(
                 f"/v1/sessions/{child_id}/items", params={"limit": 1000}
             ).json()["data"]
+            brief = next(
+                item["output"]
+                for item in child_items
+                if item.get("call_id") == f"{stage}-brief"
+                and item.get("type") == "function_call_output"
+            )
+            assert "User answer:" not in brief
+            assert "/workflow answer English" in brief
+            assert "question and stage" in brief
+            if compare:
+                assert "/workflow designs 2 select a" in brief
+                assert "Implementation approval for a: proposal revision 2" in brief
+                assert "publication authorization" in brief
+            else:
+                assert "Implementation approval for" not in brief
             read = next(
                 item["output"]
                 for item in child_items

@@ -92,6 +92,10 @@ material design change discovered during implementation stops that candidate for
 new proposals and approval. `/workflow answer` cannot approve a design change.
 Only approved designs receive isolated worktrees and the existing review stages.
 Earlier proposal rounds, decisions, evidence, and worktrees remain available.
+Worker briefs include the current proposal revision and design-selection decisions.
+Earlier answers retain their question and stage scope. Once selected, a design does
+not need a second implementation approval because an older report or journal still
+says selection is pending. Other task limits and accepted exceptions remain binding.
 
 When implementation and review finish, the coordinator presents actual behavior,
 recorded test and review evidence, tradeoffs, limitations, rejected or unsuccessful
