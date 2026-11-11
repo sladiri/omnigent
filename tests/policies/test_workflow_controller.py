@@ -1351,7 +1351,7 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     before = coding.state
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state == before
-    assert coding.spec.executor.model == "gpt-6-astra"
+    assert coding.spec.executor.model == "gpt-6.1-sol"
     assert coding.spec.executor.reasoning_effort == "high"
 
 
