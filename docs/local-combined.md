@@ -48,9 +48,12 @@ policy checks.
 Med and Hi appear only when both models resolve uniquely in the active catalog.
 A catalog without those two models keeps the ordinary model picker.
 
-Routine completed review findings advance to fixes. Questions, incomplete
-outcomes, and approval needs can stop dependent work. The controller owns stage
-advancement and publication gates.
+Three review roles check each candidate. Routine defects advance to fixes,
+followed by targeted rechecks of affected reviews. Graph-only updates retain
+review evidence; publication still checks the full snapshot. Questions,
+incomplete outcomes, and approval needs stop dependent work. GitHub reads
+support both connected-app aliases and the configured GitHub MCP server.
+The controller owns stage advancement and publication gates.
 
 ## Replaced or omitted changes
 

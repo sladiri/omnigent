@@ -58,11 +58,6 @@ STAGES = (
     "fix-b",
     "verify-b-standards",
     "verify-b-spec",
-    "review-c",
-    "fix-c",
-    "verify-c",
-    "final-b-standards",
-    "final-b-spec",
 )
 READ_TOOLS = {
     "workflow_status",
@@ -139,6 +134,9 @@ def _github_permission(event: PolicyEvent) -> PolicyResponse | None:
         "mcp__codex_apps__github_",
         "mcp__github__",
         "github__",
+        "mcp__GitHub__",
+        "mcp__GitHub_",
+        "GitHub__",
     )
     target = str(event.get("target", ""))
     for prefix in prefixes:
@@ -149,7 +147,9 @@ def _github_permission(event: PolicyEvent) -> PolicyResponse | None:
     return None
 
 
-_REVIEW = {stage for stage in STAGES if stage.startswith(("review-", "verify-", "final-"))}
+_RETIRED_STAGES = {"review-c", "fix-c", "verify-c", "final-b-standards", "final-b-spec"}
+REVIEW_ROLES = ("review-a", "review-b-standards", "review-b-spec")
+_REVIEW = {stage for stage in STAGES if stage.startswith(("review-", "verify-"))}
 
 
 def _deny(reason: str) -> PolicyResponse:
@@ -165,6 +165,16 @@ def _result(state: Json, **extra: Any) -> PolicyResponse:  # type: ignore[explic
             **extra,
         },
     )
+
+
+def _visible_state(state: Json) -> Json:
+    return {
+        **state,
+        "snapshots": {
+            key: {field: value for field, value in snapshot.items() if field != "files"}
+            for key, snapshot in state.get("snapshots", {}).items()
+        },
+    }
 
 
 def _decode(event: PolicyEvent) -> Json:
@@ -231,6 +241,11 @@ def _advance_candidate(state: Json) -> None:
     state.pop("revision", None)
     state.pop("review_wait", None)
     state["findings"] = {}
+    state["finding_roles"] = {}
+    state["finding_paths"] = {}
+    state.pop("rechecks", None)
+    state.pop("fix_context", None)
+    state.pop("retained_checks", None)
     if remaining:
         first_stage = (
             "review-a" if state["definition"]["workflow"] == "review-fix" else "implement"
@@ -511,7 +526,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         return {"result": "ALLOW"}
     linear = _linear_permission(
         target,
-        may_edit=pending["stage"].split("/")[-1] in {"implement", "fix-a", "fix-b", "fix-c"},
+        may_edit=pending["stage"].split("/")[-1] in {"implement", "fix-a", "fix-b"},
     )
     if linear is not None:
         return linear
@@ -601,8 +616,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
         ),
         block_working_dir_changes(
             block_cd=False,
-            allow_sibling_worktrees=stage.split("/")[-1]
-            in {"implement", "fix-a", "fix-b", "fix-c"},
+            allow_sibling_worktrees=stage.split("/")[-1] in {"implement", "fix-a", "fix-b"},
         ),
     ):
         verdict = policy(policy_event)
@@ -638,7 +652,16 @@ def _brief(state: Json) -> str:
     review = stage in _REVIEW
     skill = "code-review" if "-b-" in stage else "ponytail and ponytail-review"
     task = (
-        f"Load installed {skill} skills. Review the full task diff and connected code, "
+        "Independently recheck the supplied resolved findings and affected behavior in the "
+        "actual revised code. Run the checks required for the changed paths. Do not repeat "
+        "the full review. Report each independently confirmed finding ID in resolved; "
+        "retain unresolved defects in findings. If the fix materially affects previously "
+        "reviewed behavior, request reopen_reviews: [{role, reason, paths}], naming the "
+        "review role, concrete behavioral reason, and affected changed paths. Otherwise "
+        "return reopen_reviews: []. Generated Graphify output alone needs no tests, graph "
+        "validation, or review."
+        if stage.startswith("verify-")
+        else f"Load installed {skill} skills. Review the full task diff and connected code, "
         "including staged, unstaged and untracked files. Do not edit. "
         "Return COMPLETE with actionable in-scope defects in findings; the controller "
         "routes them to the fix stage automatically. Use NEEDS_INPUT only for a real "
@@ -656,7 +679,7 @@ def _brief(state: Json) -> str:
     axes = (
         f"Perform only the {stage.rsplit('-', 1)[1]} axis of the code-review skill. "
         "The other axis runs in a separate fresh session. Do not merge its findings."
-        if "-b-" in stage
+        if stage.startswith("review-b-")
         else ""
     )
     return "\n".join(
@@ -679,8 +702,9 @@ def _brief(state: Json) -> str:
             "Native delegation for independent read-only review is allowed; Omnigent session "
             "dispatch is reserved to the controller.",
             "Return only JSON: stage, outcome (COMPLETE/NEEDS_INPUT/BLOCKED), evidence "
-            "(nonempty string), findings (list of {id,message}), resolved (list of finding "
-            "IDs). NEEDS_INPUT/BLOCKED also needs question.",
+            "(nonempty string), findings (list of {id,message,paths}), resolved (list of finding "
+            "IDs). paths lists affected repository-relative files; include exact generated "
+            "paths for Graphify housekeeping. NEEDS_INPUT/BLOCKED also needs question.",
             f'Copy the exact stage ID into the report: "stage": {json.dumps(state["current"])}. '
             "Do not shorten it to the operation name.",
             "For reviews and rechecks, COMPLETE means the inspection finished; remaining "
@@ -693,6 +717,10 @@ def _brief(state: Json) -> str:
             "For Compare, implement only the approved design. A materially different design "
             "needs a new approval: stop and return outcome NEEDS_DESIGN_APPROVAL with question. "
             "Do not treat clarification as permission to change the design.",
+            "IMPLEMENT and FIX: perform required Graphify updates before reporting COMPLETE. "
+            "Generated graph output alone does not require tests, graph validation, or review. "
+            "Run required checks for source, tests, build configuration and instruction changes.",
+            f"Fix scope for targeted rechecks: {json.dumps(state.get('fix_context', {}))}",
             f"Outstanding findings: {json.dumps(state.get('findings', {}))}",
             f"Incomplete evidence: {json.dumps(state.get('incomplete', {}))}",
             f"Prior evidence: {json.dumps(state['completed'])}",
@@ -712,10 +740,116 @@ def _findings(report: Json) -> dict[str, str]:
             isinstance(item.get(k), str) and item[k].strip() for k in ("id", "message")
         ):
             raise ValueError("Each finding needs id and message")
+        paths = item.get("paths", [])
+        if not isinstance(paths, list) or not all(
+            isinstance(path, str) and path for path in paths
+        ):
+            raise ValueError("Finding paths must be a list of nonempty strings")
         if item["id"] in result:
             raise ValueError("Duplicate finding ID")
         result[item["id"]] = item["message"]
     return result
+
+
+def _generated_graph_path(path: str) -> bool:
+    parts = Path(path).parts
+    if not parts or parts[0] != "graphify-out" or ".." in parts:
+        return False
+    if Path(path).name.lower().startswith(("agents.", "claude.", "skill.")):
+        return False
+    return path in {
+        "graphify-out/graph.json",
+        "graphify-out/graph.html",
+        "graphify-out/graph.svg",
+        "graphify-out/graph.graphml",
+        "graphify-out/cypher.txt",
+        "graphify-out/GRAPH_REPORT.md",
+        "graphify-out/cost.json",
+        "graphify-out/manifest.json",
+    } or (len(parts) > 2 and parts[1] in {"wiki", "obsidian"} and path.endswith(".md"))
+
+
+def _changed_paths(before: Json, after: Json) -> list[str] | None:
+    if before.get("revision") == after["revision"]:
+        return []
+    old, new = before.get("files"), after.get("files")
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    paths = sorted(path for path in old.keys() | new.keys() if old.get(path) != new.get(path))
+    # A changed full hash without changed entries is not usable path evidence.
+    return paths or None
+
+
+def _schedule_record(state: Json, action: str, **details: Any) -> None:  # type: ignore[explicit-any]
+    state.setdefault("scheduling", []).append(
+        {
+            "candidate": _candidate(state)["id"],
+            "revision": state.get("revision"),
+            "action": action,
+            **details,
+        }
+    )
+
+
+def _review_evidence(state: Json) -> Json:
+    return state.setdefault("reviews", {}).setdefault(_candidate(state)["id"], {})
+
+
+def _schedule_review(state: Json) -> None:
+    candidate = _candidate(state)
+    if state.get("findings"):
+        _set_stage(state, candidate, "fix-" + state.get("review_group", "a"))
+        return
+    if state.get("rechecks"):
+        _set_stage(state, candidate, state["rechecks"][0])
+        return
+    evidence = _review_evidence(state)
+    required = state.get("applicable_reviews", {}).get(candidate["id"], REVIEW_ROLES)
+    for role in required:
+        if role not in evidence:
+            _set_stage(state, candidate, role)
+            return
+    state["verified"][candidate["id"]] = state["revision"]
+    _schedule_record(state, "candidate-verified", reviews=list(evidence))
+    _advance_candidate(state)
+
+
+def _reopen_reviews(state: Json, reports: Json, changed: list[str] | None) -> None:
+    for report in reports.values():
+        requests = report.get("reopen_reviews", [])
+        if not isinstance(requests, list):
+            raise ValueError("reopen_reviews must be a list")
+        for request in requests:
+            if (
+                not isinstance(request, dict)
+                or request.get("role") not in REVIEW_ROLES
+                or not isinstance(request.get("reason"), str)
+                or not request["reason"].strip()
+                or not isinstance(request.get("paths"), list)
+                or not request["paths"]
+                or changed is None
+                or not set(request["paths"]).issubset(changed)
+            ):
+                raise ValueError("Broader review needs a role, concrete reason and changed paths")
+            if _review_evidence(state).pop(request["role"], None) is not None:
+                _schedule_record(state, "reopen-review", **request)
+
+
+def _apply_rechecks(state: Json, reports: Json, findings: dict[str, str]) -> None:
+    _reopen_reviews(state, reports, state.get("fix_context", {}).get("paths"))
+    resolved = {
+        identifier
+        for key, value in reports.items()
+        for identifier in value["resolved"]
+        if state.get("finding_roles", {}).get(identifier)
+        == key.split("/")[-1].replace("verify-", "review-", 1)
+    }
+    for identifier in resolved - findings.keys():
+        state["findings"].pop(identifier, None)
+        state.get("finding_roles", {}).pop(identifier, None)
+        state.get("finding_paths", {}).pop(identifier, None)
+    done = {key.split("/")[-1] for key, value in reports.items() if not value.get("question")}
+    state["rechecks"] = [s for s in state.get("rechecks", []) if s not in done]
 
 
 def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
@@ -724,9 +858,33 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
     candidate, stage = _candidate(state), _stage(state)
     if snapshot.get("branch") != candidate["branch"]:
         return _block(state, "Candidate branch changed")
+    previous = state.setdefault("snapshots", {}).get(
+        candidate["id"], {"revision": state.get("revision")}
+    )
+    changed = _changed_paths(previous, snapshot)
+    relevant = None if changed is None else [p for p in changed if not _generated_graph_path(p)]
+    graph_only = bool(changed) and relevant == []
     purpose = state["snapshot_for"]
+    if purpose != "selection" and (state.get("scheduler_version") != 2 or stage not in STAGES):
+        return _block(state, "Saved run requires its original scheduler; no stages were advanced")
+    if graph_only:
+        _schedule_record(
+            state,
+            "retain-evidence",
+            reason="Only generated Graphify output changed",
+            paths=changed,
+        )
+        old_revision = previous.get("revision")
+        if state["verified"].get(candidate["id"]) == old_revision:
+            state["verified"][candidate["id"]] = snapshot["revision"]
+        if state.get("publication_authorized_revision") == old_revision:
+            state["publication_authorized_revision"] = snapshot["revision"]
     if purpose == "selection":
         if snapshot["revision"] != state["verified"].get(candidate["id"]):
+            _review_evidence(state).clear()
+            _schedule_record(
+                state, "reopen-review", reason="Selected contents changed", paths=relevant
+            )
             state["selected"] = None
             state.pop("publication_input", None)
             state.pop("publication_authorized_revision", None)
@@ -734,6 +892,7 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
             _set_stage(state, candidate, "review-a")
             state["question"] = "Selected candidate changed; reviews and selection must run again"
             return _result(state)
+        state["snapshots"][candidate["id"]] = snapshot
         state.update(
             status="publish"
             if (
@@ -744,56 +903,149 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
             question=None,
         )
         return _result(state)
+    baseline_paths = snapshot.get("baseline_paths")
+    graph_scope = (
+        isinstance(baseline_paths, list)
+        and bool(baseline_paths)
+        and all(isinstance(path, str) and _generated_graph_path(path) for path in baseline_paths)
+    )
+    state.setdefault("applicable_reviews", {})[candidate["id"]] = (
+        [] if graph_scope else list(REVIEW_ROLES)
+    )
     if purpose == "before":
         if (
             state.get("revision")
             and snapshot["revision"] != state["revision"]
+            and not graph_only
             and stage != "implement"
         ):
-            _set_stage(state, candidate, "review-a")
-            state["findings"] = {}
+            _review_evidence(state).clear()
+            state.pop("rechecks", None)
+            state.pop("retained_checks", None)
             state["verified"].pop(candidate["id"], None)
+            _schedule_record(
+                state, "reopen-review", reason="Contents changed outside a fix", paths=relevant
+            )
+            _set_stage(state, candidate, "review-a")
+        state["snapshots"][candidate["id"]] = snapshot
+        for key, saved in list(state.get("retained_checks", {}).items()):
+            if saved.get("question"):
+                continue
+            role = key.split("/")[-1].replace("verify-", "review-", 1)
+            axis = role.rsplit("-", 1)[1] + "/" if "-b-" in role else ""
+            findings = {axis + k: v for k, v in _findings(saved).items()}
+            for identifier in findings:
+                state.setdefault("finding_roles", {})[identifier] = role
+            for item in saved["findings"]:
+                state.setdefault("finding_paths", {})[axis + item["id"]] = item.get("paths", [])
+            _apply_rechecks(state, {key: saved}, findings)
+            state["findings"].update(findings)
+            evidence = {**saved, "revision": state["revision"]}
+            state["completed"][key] = evidence
+            state.setdefault("evidence_history", []).append(evidence)
+            state["retained_checks"].pop(key)
+            _schedule_record(state, "reuse-recheck", stage=key)
+        if (
+            stage in REVIEW_ROLES
+            and not state.get("findings")
+            and state.get("applicable_reviews", {}).get(candidate["id"]) == []
+        ):
+            state["revision"] = snapshot["revision"]
+            _schedule_record(state, "graph-only-scope", paths=baseline_paths)
+            _schedule_review(state)
+            return _result(state)
+        if stage in REVIEW_ROLES:
+            saved = _review_evidence(state).get(stage)
+            if saved and not saved.get("question"):
+                missing = next(
+                    (role for role in REVIEW_ROLES if role not in _review_evidence(state)), None
+                )
+                if missing:
+                    _set_stage(state, candidate, missing)
+        elif stage.startswith("verify-") and stage not in state.get("rechecks", []):
+            if state.get("rechecks"):
+                _set_stage(state, candidate, state["rechecks"][0])
         state.update(status="ready", revision=snapshot["revision"], question=None)
         return _result(state)
     report = state.pop("report")
-    if stage in _REVIEW and snapshot["revision"] != state["revision"]:
+    if stage in _REVIEW and snapshot["revision"] != state["revision"] and not graph_only:
         state["verified"].pop(candidate["id"], None)
         return _block(
             state,
             "Read-only review changed the candidate; rerun reviews after restoring ownership",
         )
+    state["snapshots"][candidate["id"]] = snapshot
     state["revision"] = snapshot["revision"]
     parallel = state.pop("parallel", None)
-    findings = _findings(report) if stage in _REVIEW else {}
-    if parallel:
-        findings = {}
-        for key, axis_report in parallel["reports"].items():
-            state["completed"][key] = {**axis_report, "revision": state["revision"]}
-            axis = key.rsplit("-", 1)[1]
-            findings.update({axis + "/" + k: v for k, v in _findings(axis_report).items()})
-        stage = stage.removesuffix("standards") + "spec"
-        state["current"] = candidate["id"] + "/" + stage
-    else:
-        state["completed"][state["current"]] = {**report, "revision": state["revision"]}
-    if stage.startswith("fix-") and not set(state["findings"]).issubset(
-        set(report.get("resolved", []))
+    all_reports = parallel["reports"] if parallel else {state["current"]: report}
+    reports = {
+        key: value for key, value in all_reports.items() if value.get("outcome") == "COMPLETE"
+    }
+    for key, value in reports.items():
+        saved = {**value, "revision": state["revision"]}
+        state["completed"][key] = saved
+        state.setdefault("evidence_history", []).append(saved)
+    if stage == "implement":
+        _schedule_review(state)
+        return _result(state)
+    if stage.startswith("fix-"):
+        if not set(state["findings"]).issubset(report.get("resolved", [])):
+            return _block(state, "Fix did not account for every outstanding finding")
+        if relevant == []:
+            paths = state.get("finding_paths", {})
+            if graph_only and all(
+                paths.get(identifier) and all(_generated_graph_path(p) for p in paths[identifier])
+                for identifier in state["findings"]
+            ):
+                _schedule_record(
+                    state, "graph-update-complete", paths=changed, resolved=list(state["findings"])
+                )
+                state["findings"] = {}
+                state["finding_roles"] = {}
+                state["finding_paths"] = {}
+                state.pop("rechecks", None)
+                _schedule_review(state)
+                return _result(state)
+            return _block(state, "Fix changed no relevant contents; findings remain unresolved")
+        roles = set(state.get("finding_roles", {}).values()) or {
+            "review-a" if stage == "fix-a" else "review-b-standards",
+            *([] if stage == "fix-a" else ["review-b-spec"]),
+        }
+        state["fix_context"] = {
+            "findings": dict(state["findings"]),
+            "paths": relevant,
+            "revision": state["revision"],
+        }
+        state["rechecks"] = [
+            role.replace("review-", "verify-", 1) for role in REVIEW_ROLES if role in roles
+        ]
+        _schedule_record(state, "targeted-recheck", paths=relevant, stages=state["rechecks"])
+        _set_stage(state, candidate, state["rechecks"][0])
+        return _result(state)
+    findings = {}
+    for key, value in reports.items():
+        role = key.split("/")[-1].replace("verify-", "review-", 1)
+        axis = role.rsplit("-", 1)[1] + "/" if "-b-" in role else ""
+        for identifier, message in _findings(value).items():
+            findings[axis + identifier] = message
+            state.setdefault("finding_roles", {})[axis + identifier] = role
+        for item in value["findings"]:
+            state.setdefault("finding_paths", {})[axis + item["id"]] = item.get("paths", [])
+        if not stage.startswith("verify-"):
+            _review_evidence(state)[role] = state["completed"][key]
+    if stage.startswith("verify-"):
+        _apply_rechecks(state, reports, findings)
+    state["findings"].update(findings)
+    state["review_group"] = "b" if "-b-" in stage else "a"
+    fix = "fix-" + state["review_group"] if state["findings"] else None
+    if _wait_for_review(
+        state, all_reports, next_stage=fix if len(reports) == len(all_reports) else None
     ):
-        return _block(state, "Fix did not account for every outstanding finding")
-    if stage in _REVIEW:
-        state["findings"] = findings
-    fix = ("fix-b" if "-b-" in stage else "fix-" + stage[-1]) if findings else None
-    reports = parallel["reports"] if parallel else {state["current"]: report}
-    if _wait_for_review(state, reports, next_stage=fix):
         return _result(state)
-    if fix:
-        _set_stage(state, candidate, fix)
-        return _result(state)
-    if stage == "final-b-spec":
-        state["verified"][candidate["id"]] = state["revision"]
-        _advance_candidate(state)
+    if state.get("rechecks"):
+        _set_stage(state, candidate, state["rechecks"][0])
     else:
-        next_stage = STAGES[STAGES.index(stage) + 1]
-        _set_stage(state, candidate, next_stage)
+        _schedule_review(state)
     return _result(state)
 
 
@@ -838,6 +1090,21 @@ def _retire_dispatches(state: Json) -> bool:
     parallel = state.pop("parallel", {})
     reports = parallel.get("reports", {})
     state.setdefault("incomplete", {}).update(reports)
+    for key, report in reports.items():
+        role = key.split("/")[-1]
+        if role.startswith("verify-") and report.get("outcome") == "COMPLETE":
+            state.setdefault("retained_checks", {})[key] = report
+        if role in REVIEW_ROLES and report.get("outcome") == "COMPLETE":
+            saved = {**report, "revision": state["revision"]}
+            state["completed"][key] = saved
+            state.setdefault("evidence_history", []).append(saved)
+            _review_evidence(state)[role] = saved
+            axis = role.rsplit("-", 1)[1] + "/" if "-b-" in role else ""
+            for identifier, message in _findings(report).items():
+                state["findings"][axis + identifier] = message
+                state.setdefault("finding_roles", {})[axis + identifier] = role
+            for item in report["findings"]:
+                state.setdefault("finding_paths", {})[axis + item["id"]] = item.get("paths", [])
     if _wait_for_review(state, reports):
         return True
     return False
@@ -875,7 +1142,10 @@ def _accept_worker_result(
         )
     if result.get("outcome") == "COMPLETE":
         try:
-            _findings(result)
+            findings = _findings(result)
+            stage = pending["stage"].split("/")[-1]
+            if findings and (stage == "implement" or stage.startswith("fix-")):
+                raise ValueError("Implementation and fix reports cannot leave actionable findings")
             resolved = result.get("resolved")
             if not isinstance(resolved, list) or not all(
                 isinstance(item, str) and item.strip() for item in resolved
@@ -903,6 +1173,13 @@ def _accept_worker_result(
                 parallel["reports"][state["current"]],
             ),
         )
+    if (
+        parallel
+        and result.get("outcome") != "COMPLETE"
+        and any(value.get("outcome") == "COMPLETE" for value in reports.values())
+    ):
+        state.update(status="snapshot", snapshot_for="after", report=result)
+        return _result(state)
     if result.get("outcome") != "COMPLETE" and _wait_for_review(state, reports):
         state.pop("parallel", None)
         state.setdefault("incomplete", {}).update(reports)
@@ -991,7 +1268,7 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
 
     outstanding = _pending(state)
     if not outstanding:
-        return _result(state, data=json.dumps(state))
+        return _result(state, data=json.dumps(_visible_state(state)))
     store = get_conversation_store()
     ids = store.list_child_conversation_ids_by_parent([root_id]).get(root_id, [])
     children = store.get_conversations(ids)
@@ -1041,7 +1318,7 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
             pending["reconciled_absent"] = True
     outstanding = _pending(state)
     if not outstanding:
-        return _result(state, data=json.dumps(state))
+        return _result(state, data=json.dumps(_visible_state(state)))
     if all(item.get("stopped") for item in outstanding):
         if _retire_dispatches(state):
             return _result(state)
@@ -1060,7 +1337,7 @@ def _reconcile(state: Json, root_id: str) -> PolicyResponse:
         "An idle child without a completion needs operator investigation; it is not proof "
         "that the dispatch stopped.",
     )
-    return _result(state, data=json.dumps(state))
+    return _result(state, data=json.dumps(_visible_state(state)))
 
 
 def _coding_controller(
@@ -1178,6 +1455,7 @@ def _coding_controller(
                     return _deny(str(exc))
                 state = {
                     "status": "prepare",
+                    "scheduler_version": 2,
                     "definition": definition,
                     "workflow_id": session_id,
                     "completed": {},
@@ -1338,7 +1616,11 @@ def _coding_controller(
             if target == "workflow_prepare" and state["status"] == "prepare":
                 return _result(state, data={"definition": state["definition"]})
             if target == "workflow_snapshot" and state["status"] == "snapshot":
-                return _result(state, data={"workspace": _candidate(state)["workspace"]})
+                candidate = _candidate(state)
+                return _result(
+                    state,
+                    data={"workspace": candidate["workspace"], "baseline": candidate["baseline"]},
+                )
             if (
                 target == "workflow_publish"
                 and state["status"] == "publish"
@@ -1390,7 +1672,18 @@ def _coding_controller(
             # The paired reviewer belongs to the already authorized dispatch.
             if not (retry_authorized or paired_stage) and state["attempt"] > max_attempts + 1:
                 return {**_block(state, "Stage attempt limit reached"), "result": "DENY"}
-            stage = _stage(state)
+            stage = (paired_stage or state.get("current", "")).split("/")[-1]
+            if stage not in STAGES and stage not in comparison.ANALYSIS_STAGES:
+                return _deny("Saved stage is retired; it cannot be dispatched by this controller")
+            if state.get("scheduler_version") != 2:
+                return _deny(
+                    "Saved run uses the previous scheduler; use its original runtime "
+                    "or start a new workflow"
+                )
+            if stage.startswith("fix-") and not state.get("findings"):
+                return _deny("A fix requires actionable outstanding findings")
+            if stage.startswith("verify-") and stage not in state.get("rechecks", []):
+                return _deny("Verification requires an actual fix awaiting a targeted recheck")
             if stage.startswith("fix-"):
                 count = state["fix_attempts"].get(state["current"], 0)
                 if count >= max_attempts and not retry_authorized:
@@ -1410,7 +1703,16 @@ def _coding_controller(
                 state["parallel"].update(next=None, pending=pending)
             else:
                 state["pending"] = pending
-                if stage.endswith("-b-standards"):
+                if stage.endswith("-b-standards") and (
+                    (
+                        stage.startswith("review-")
+                        and "review-b-spec" not in _review_evidence(state)
+                    )
+                    or (
+                        stage.startswith("verify-")
+                        and "verify-b-spec" in state.get("rechecks", [])
+                    )
+                ):
                     state["parallel"] = {
                         "next": current.removesuffix("standards") + "spec",
                         "pending": None,
@@ -1468,7 +1770,13 @@ def _coding_controller(
         if target == "workflow_status":
             if _pending(state) and state["status"] == "running":
                 _reconcile(state, session_id)
-            status = dict(state)
+            status = _visible_state(state)
+            if state.get("definition") and state.get("scheduler_version") != 2:
+                status["next_action"] = (
+                    "This saved run uses the previous scheduler. Its state and workers are "
+                    "preserved. Use its original runtime or start a new workflow; this "
+                    "controller does not migrate or dispatch its stages."
+                )
             if state["status"] == "idle":
                 status["next_action"] = (
                     "Prepare the start request with workflow_draft. It validates the command "
@@ -1534,7 +1842,13 @@ def _coding_controller(
             return _result(state)
         if target == "workflow_snapshot" and state["status"] == "snapshot":
             try:
-                return _accept_snapshot(state, result)
+                response = _accept_snapshot(state, result)
+                return {
+                    **response,
+                    "data": json.dumps(
+                        {key: value for key, value in result.items() if key != "files"}
+                    ),
+                }
             except (ValueError, TypeError, KeyError) as exc:
                 return _block(state, f"Invalid stage evidence: {exc}")
         if target == "workflow_publish" and state["status"] == "publish":
@@ -1586,4 +1900,10 @@ def make_controller(
     """Build the persisted coding workflow controller."""
     if type(max_attempts) is not int or max_attempts < 1:
         raise ValueError("max_attempts must be a positive integer")
-    return _coding_controller(max_attempts, _execution_settings({}, worker_defaults, stages))
+    # Archived bundles retain retired routing keys; keep their saved runs readable.
+    active_stages = {
+        key: value for key, value in (stages or {}).items() if key not in _RETIRED_STAGES
+    }
+    return _coding_controller(
+        max_attempts, _execution_settings({}, worker_defaults, active_stages)
+    )

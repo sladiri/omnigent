@@ -379,12 +379,6 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
         ("fix-a",),
         ("verify-a",),
         ("review-b-standards", "review-b-spec"),
-        ("fix-b",),
-        ("verify-b-standards", "verify-b-spec"),
-        ("review-c",),
-        ("fix-c",),
-        ("verify-c",),
-        ("final-b-standards", "final-b-spec"),
     )
     if review:
         groups = groups[1:]
@@ -430,8 +424,16 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                         },
                     )
                 )
-            if stage == "fix-a":
+            if stage in {"fix-a", "verify-a"}:
                 report["resolved"] = ["wording"]
+            if stage == "fix-a":
+                child_calls.append(
+                    _tool(
+                        "sys_os_write",
+                        "fix-write",
+                        {"path": str(workspace / "greeting.txt"), "content": "hello!\n"},
+                    )
+                )
             child_calls.append(
                 _tool("sys_os_read", f"{stage}-read", {"path": str(workspace / "greeting.txt")})
             )
@@ -496,7 +498,11 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 and item.get("type") == "function_call_output"
             )
             assert "hello" in read and "error" not in read.lower(), read
-            assert (workspace / "greeting.txt").read_text() == "hello\n", child_items
+            assert (workspace / "greeting.txt").read_text() == (
+                "hello!\n"
+                if stage in {"fix-a", "verify-a"} or stage.startswith("review-b-")
+                else "hello\n"
+            ), child_items
             if stage == "implement":
                 outside = next(
                     item["output"]
@@ -527,7 +533,7 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 )
                 assert _status(paused, "review-paused-status") == state
                 answered = parent_turn(
-                    "/workflow answer Keep hello without punctuation",
+                    "/workflow answer Use hello with an exclamation mark",
                     [
                         snapshot("review-answer-snapshot"),
                         _tool("workflow_status", "review-answer-status"),
@@ -536,7 +542,12 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                 )
                 resumed = _status(answered, "review-answer-status")
                 assert resumed["status"] == "ready" and resumed["current"] == "a/fix-a"
-        assert (repository / "greeting.txt").read_text() == ("hello\n" if review else "before\n")
+        expected = "before\n"
+        if review:
+            expected = (
+                "hello!\n" if marker in {"fix-a", "verify-a", "review-b-standards"} else "hello\n"
+            )
+        assert (repository / "greeting.txt").read_text() == expected
         assert not publication_record.exists()
 
     if compare:
@@ -553,7 +564,12 @@ def test_coding_workflow_runs_real_worktree_reviews_and_selected_publication(
                     "behavior": "Greeting is hello",
                     "tradeoffs": "Small direct change",
                     "limitations": "English only",
-                    "evidence": ["a/implement", "a/final-b-standards", "a/final-b-spec"],
+                    "evidence": [
+                        "a/implement",
+                        "a/review-a",
+                        "a/review-b-standards",
+                        "a/review-b-spec",
+                    ],
                 },
                 {
                     "id": "b",
@@ -942,7 +958,8 @@ def test_bundled_draft_starts_requested_branch_only_after_user_approval(
 
 
 @pytest.mark.timeout(120)
-def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_path):
+@pytest.mark.parametrize("service", ["linear", "github"])
+def test_external_permissions_leave_persisted_states_unchanged_after_restart(tmp_path, service):
     from omnigent.cli import _bundle
     from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
     from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -952,7 +969,26 @@ def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_p
     from tests.policies.test_workflow_linear import STATES
 
     root = Path(__file__).resolve().parents[2]
-    bundle = _mock_bundle(tmp_path / "linear-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    bundle = _mock_bundle(tmp_path / "external-controller", "mock-worker", "http://127.0.0.1:1/v1")
+    if service == "github":
+        from tests.policies.test_workflow_github import PREFIXES, READS, WRITES
+
+        prefixes = PREFIXES
+        operations = [(op, "ALLOW") for op in READS] + [(op, "DENY") for op in WRITES]
+        arguments = {"owner": "org", "repo": "repo", "method": "get", "pullNumber": 378}
+    else:
+        prefixes = ("mcp__codex_apps__linear_", "mcp__codex_apps__linear__")
+        operations = [
+            ("get_issue", "ALLOW"),
+            ("list_issue_statuses", "ALLOW"),
+            ("create_issue", "ALLOW"),
+            ("update_issue", "ALLOW"),
+            ("save_issue", "ALLOW"),
+            ("delete_issue", "DENY"),
+            ("save_comment", "DENY"),
+            ("save_project", "DENY"),
+        ]
+        arguments = {"id": "TEST-1"}
     with (
         server_runner(tmp_path / "stack", server_cwd=root) as stack,
         operator_agent_store(stack.base_url, stack.database_uri, stack.artifact_location),
@@ -980,32 +1016,23 @@ def test_linear_permissions_leave_persisted_states_unchanged_after_restart(tmp_p
                 sessions[sid] = state
             stack.restart_server()
             for sid, state in sessions.items():
-                for separator in ("_", "__"):
-                    for operation, verdict in (
-                        ("get_issue", "ALLOW"),
-                        ("list_issue_statuses", "ALLOW"),
-                        ("create_issue", "ALLOW"),
-                        ("update_issue", "ALLOW"),
-                        ("save_issue", "ALLOW"),
-                        ("delete_issue", "DENY"),
-                        ("save_comment", "DENY"),
-                        ("save_project", "DENY"),
-                    ):
-                        name = f"mcp__codex_apps__linear{separator}{operation}"
+                for prefix in prefixes:
+                    for operation, verdict in operations:
+                        name = prefix + operation
                         response = client.post(
                             f"/v1/sessions/{sid}/policies/evaluate",
                             json={
                                 "event": {
                                     "type": "PHASE_TOOL_CALL",
                                     "target": "",
-                                    "data": {"name": name, "arguments": {"id": "TEST-1"}},
+                                    "data": {"name": name, "arguments": arguments},
                                     "context": {},
                                 }
                             },
                         )
                         response.raise_for_status()
                         assert response.json()["result"] == "POLICY_ACTION_" + verdict
-                        # Only evaluate policy; never execute an external Linear tool.
+                        # Only evaluate policy; never execute an external service tool.
                         result = client.post(
                             f"/v1/sessions/{sid}/policies/evaluate",
                             json={
@@ -1081,6 +1108,7 @@ def test_native_question_recovery_and_answer_survive_restart(tmp_path):
                 {
                     STATE_KEY: {
                         "status": "running",
+                        "scheduler_version": 2,
                         "current": "one/implement",
                         "attempt": 1,
                         "definition": {"run_id": sid, "publish": False},

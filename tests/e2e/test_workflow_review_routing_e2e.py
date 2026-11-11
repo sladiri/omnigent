@@ -46,6 +46,7 @@ def test_review_fix_and_decisions_survive_restart(repository, tmp_path, decision
                 {
                     STATE_KEY: {
                         "status": "ready",
+                        "scheduler_version": 2,
                         "current": "one/review-a",
                         "attempt": 1,
                         "definition": {
@@ -195,6 +196,7 @@ def test_review_fix_and_decisions_survive_restart(repository, tmp_path, decision
             assert "Reject invalid input" in brief
             if decision:
                 assert "Use the existing format" in brief
+            (repository / "hello.txt").write_text("validated input\n")
             complete(sent, child, resolved=[item["id"] for item in findings])
             assert state()["current"] == "one/verify-a"
             assert state()["verified"] == {}
@@ -217,3 +219,54 @@ def test_review_fix_and_decisions_survive_restart(repository, tmp_path, decision
             assert state()["status"] == "snapshot"
             assert state()["verified"] == {}
             assert state()["decisions"][0] == accepted
+
+            take_snapshot()
+            sent, child = dispatch()
+            (repository / "hello.txt").write_text("validated all inputs\n")
+            complete(sent, child, resolved=list(state()["findings"]))
+            saved = state()
+            stack.restart_server()
+            assert state() == saved
+            take_snapshot()
+            sent, child = dispatch()
+            assert sent["title"].startswith("one/verify-a/")
+            complete(sent, child, resolved=list(state()["findings"]))
+            take_snapshot()
+            standards, standards_child = dispatch()
+            spec, spec_child = dispatch()
+            complete(standards, standards_child)
+            complete(spec, spec_child)
+            assert state()["current"] is None
+            assert state()["status"] == "waiting-user"
+            assert state()["decisions"][0] == accepted
+            evidence = state()["completed"]
+            generated = repository / "graphify-out"
+            generated.mkdir()
+            (generated / "graph.json").write_text('{"nodes": []}\n')
+            evaluate("PHASE_REQUEST", {"text": "/workflow select one"})
+            take_snapshot()
+            assert state()["status"] == "complete"
+            assert state()["completed"] == evidence
+            assert state()["scheduling"][-1]["action"] == "retain-evidence"
+            assert "graphify-out/graph.json" in state()["snapshots"]["one"]["files"]
+            assert (
+                state()["verified"]["one"]
+                == json.loads(workflow_snapshot(str(repository)))["revision"]
+            )
+            saved = state()
+            stack.restart_server()
+            assert state() == saved
+            assert (
+                evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})[
+                    "result"
+                ]
+                == "POLICY_ACTION_DENY"
+            )
+            (generated / "graph.json").write_text('{"nodes": [1]}\n')
+            (repository / "hello.txt").write_text("mixed source change\n")
+            evaluate("PHASE_REQUEST", {"text": "/workflow publish one"})
+            take_snapshot()
+            assert state()["selected"] is None
+            assert state()["verified"] == {}
+            assert state()["current"] == "one/review-a"
+            assert state()["status"] == "snapshot"
