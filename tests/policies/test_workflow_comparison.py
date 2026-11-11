@@ -10,6 +10,7 @@ from omnigent.spec.parser import parse
 from omnigent.spec.types import Phase, PolicyAction
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
 from omnigent.workflows.comparison import DESIGN_FIELDS
+from omnigent.workflows.comparison import brief as analysis_brief
 from tests.policies.test_workflow_controller import (
     CONFIG,
     _call,
@@ -527,3 +528,39 @@ async def test_parallel_failure_recovery_preserves_design_approval_request(
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     await coding.evaluate(_request("/workflow designs 1 revise Change storage"))
     assert coding.state["current"] == "explore"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["evidence", "checks", "reasons"])
+async def test_malformed_analysis_report_survives_restart_and_format_retry(coding, db_uri, field):
+    await start(coding)
+    dispatch = await coding.dispatch()
+    original = design_report(("simple",))
+    if field == "reasons":
+        original["recommendation"][field] = ["Preserved research"]
+    else:
+        original[field] = ["Preserved research"]
+    await report(coding, dispatch, original)
+    assert coding.state["status"] == "blocked"
+    assert field in coding.state["question"]
+    assert "string" in coding.state["question"]
+    saved = coding.state["incomplete"]["explore"]
+    assert saved["designs"] == original["designs"]
+    before = coding.state
+    coding.store = SqlAlchemyConversationStore(db_uri)
+    assert coding.state == before
+    await coding.evaluate(_request("/workflow answer Correct only the report format"))
+    retry = await coding.dispatch()
+    brief = analysis_brief(coding.state)
+    assert "Preserved research" in brief
+    assert "evidence (nonempty string)" in brief
+    assert "checks (nonempty string)" in brief
+    assert "reasons (nonempty string)" in brief
+    await report(coding, retry, design_report(("simple",)))
+    assert coding.state["status"] == "waiting-design-selection"
+    assert coding.state["designs"]["approved"] == []
+    assert coding.state["definition"]["publish"] is False
+    assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
+    await present(coding)
+    await coding.evaluate(_request("continue"))
+    assert coding.state["status"] == "waiting-design-selection"
