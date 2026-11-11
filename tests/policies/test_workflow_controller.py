@@ -1231,7 +1231,9 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     dispatch = await coding.dispatch()
     implementation = stage == "implement" or stage.startswith("fix-")
     assert dispatch["args"]["model"] == ("gpt-6.1-sol" if implementation else "gpt-6-astra")
-    assert dispatch["args"]["reasoning_effort"] == ("high" if implementation else "xhigh")
+    assert dispatch["args"]["reasoning_effort"] == (
+        "high" if stage.startswith("fix-") else "xhigh"
+    )
     if stage.endswith("-b-standards"):
         paired = await coding.dispatch()
         assert paired["args"]["model"] == "gpt-6-astra"

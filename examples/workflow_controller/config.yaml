@@ -119,7 +119,7 @@ guardrails:
         stages:
           implement:
             model: gpt-6.1-sol
-            reasoning_effort: high
+            reasoning_effort: xhigh
           fix-a:
             model: gpt-6.1-sol
             reasoning_effort: high
