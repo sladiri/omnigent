@@ -720,6 +720,39 @@ def test_compare_design_wait_survives_server_process_restart(tmp_path: Path):
             dispatch = dispatched["data"]
             assert dispatch["args"]["model"] == "mock-design"
             assert dispatch["args"]["reasoning_effort"] == "xhigh"
+            malformed = {
+                "stage": "explore",
+                "outcome": "COMPLETE",
+                "evidence": "Read code",
+                "findings": [],
+                "resolved": [],
+                **design_report(),
+                "checks": ["Preserve this acceptance matrix"],
+            }
+            evaluate(
+                "PHASE_TOOL_RESULT",
+                {"result": json.dumps(malformed)},
+                {
+                    "name": "sys_session_send",
+                    "args": {
+                        "title": dispatch["title"],
+                        "agent": "worker",
+                        "conversation_id": "http-invalid-worker",
+                    },
+                    "subagent": {"status": "completed", "work_id": "http-invalid"},
+                },
+            )
+            stack.restart_server()
+            status = evaluate("PHASE_TOOL_RESULT", {"result": "stub"}, {"name": "workflow_status"})
+            state = json.loads(status["data"])
+            assert state["status"] == "blocked"
+            assert "checks" in state["question"] and "strings" in state["question"]
+            assert state["incomplete"]["explore"]["checks"] == malformed["checks"]
+            denied = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
+            assert denied["result"] == "POLICY_ACTION_DENY"
+            evaluate("PHASE_REQUEST", {"text": "/workflow answer Correct only the report format"})
+            dispatched = evaluate("PHASE_TOOL_CALL", {"name": "sys_session_send", "arguments": {}})
+            dispatch = dispatched["data"]
             evaluate(
                 "PHASE_TOOL_RESULT",
                 {

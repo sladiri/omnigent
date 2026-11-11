@@ -1163,16 +1163,18 @@ def _accept_worker_result(
         and result.get("stage") == pending["stage"].rsplit("/", 1)[-1]
     ):
         result["stage"] = pending["stage"]
-    if (
-        result.get("stage") != pending["stage"]
-        or not isinstance(result.get("evidence"), str)
-        or not result["evidence"].strip()
-    ):
+    errors = []
+    if result.get("stage") != pending["stage"]:
+        errors.append(f"stage must equal {pending['stage']!r}")
+    if not isinstance(result.get("evidence"), str) or not result["evidence"].strip():
+        errors.append("evidence must be a nonempty string")
+    if errors:
         question = result.get("question")
         result.update(
             stage=pending["stage"],
             outcome="BLOCKED",
-            question="Worker returned invalid stage evidence"
+            question="Worker returned invalid stage evidence: "
+            + "; ".join(errors)
             + (f". Worker question: {question}" if isinstance(question, str) else ""),
         )
     if result.get("outcome") == "COMPLETE":
@@ -1247,6 +1249,7 @@ def _accept_worker_result(
         try:
             comparison.accept(state, result)
         except (ValueError, TypeError, KeyError) as exc:
+            state.setdefault("incomplete", {})[pending["stage"]] = result
             return _block(state, f"Invalid comparison: {exc}")
         return _result(state)
     state.update(status="snapshot", snapshot_for="after", report=result)

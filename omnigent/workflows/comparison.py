@@ -42,8 +42,11 @@ def brief(state: Json) -> str:
         "Do not implement, run candidate tests, edit files, or delegate. Read repository "
         "instructions and relevant code. Shell access is limited to the exact read commands "
         "listed below; use sys_os_read for files.\n"
-        "Return JSON: stage, outcome (COMPLETE/NEEDS_INPUT/BLOCKED), evidence (nonempty), "
-        "findings: [], resolved: []. NEEDS_INPUT/BLOCKED also needs question.\n"
+        "Return JSON: stage, outcome (COMPLETE/NEEDS_INPUT/BLOCKED), evidence (nonempty string), "
+        "findings: [], resolved: []. NEEDS_INPUT/BLOCKED also needs question. "
+        "Use strings, not lists, for text fields.\n"
+        "Previous incomplete report (reuse its research and correct any format errors): "
+        f"{json.dumps(state.get('incomplete', {}).get(state['current'], {}))}\n"
         f"User answer: {state.get('answer', '')}\n"
     )
     if state["current"] == "explore":
@@ -53,8 +56,9 @@ def brief(state: Json) -> str:
             "benefits from measurements. COMPLETE also needs designs: a nonempty list of "
             "objects with stable lowercase kebab-case id and nonempty text fields "
             f"{', '.join(DESIGN_FIELDS)}. Use 'None identified' where appropriate. "
-            "Also supply checks: the shared acceptance test matrix, and recommendation: "
-            "{id, reasons}. Preserve IDs for existing designs; never reuse an old ID for "
+            "Also supply checks (nonempty string): the shared acceptance test matrix, and "
+            "recommendation: {id, reasons}, with reasons (nonempty string). Preserve IDs "
+            "for existing designs; never reuse an old ID for "
             "an unrelated design. Material revisions must be described explicitly.\n"
             f"Initial candidate suggestions: {json.dumps(definition.get('candidates', []))}\n"
             f"Previous proposals: {json.dumps(state.get('designs', {}))}\n"
@@ -67,7 +71,7 @@ def brief(state: Json) -> str:
         "{id, behavior, tradeoffs, limitations, evidence}, where evidence is a list of "
         "completed stage keys for that design (empty for unimplemented designs). Cite "
         "the implementation and every applicable review role for verified designs. "
-        "recommendation: {id, reasons} must name "
+        "recommendation: {id, reasons}, with reasons (nonempty string), must name "
         "a verified design, or id: null if none succeeded. Explain all exclusions.\n"
         f"Proposals and implementation decisions: {json.dumps(state['designs'])}\n"
         f"Candidates: {json.dumps(state['candidates'])}\n"
@@ -80,8 +84,11 @@ def brief(state: Json) -> str:
 
 
 def _text(value: Json, fields: tuple[str, ...]) -> None:
-    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in fields):
-        raise ValueError("Comparison needs nonempty text: " + ", ".join(fields))
+    invalid = [
+        key for key in fields if not isinstance(value.get(key), str) or not value[key].strip()
+    ]
+    if invalid:
+        raise ValueError("Comparison fields must be nonempty strings: " + ", ".join(invalid))
 
 
 def _recommendation(report: Json, eligible: set[str]) -> None:

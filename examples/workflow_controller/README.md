@@ -224,6 +224,12 @@ it must not override repository instructions requiring local setup.
 
 ## Stages and evidence
 
+Analysis reports use nonempty strings for top-level `evidence`, `checks`, and
+`recommendation.reasons`. Result-row `evidence` remains a list of recorded stage
+keys. Invalid reports identify the field, remain saved across restart, and return
+to the worker on retry so completed research can be reused. Correcting a report
+does not approve a design or authorize implementation or publication.
+
 Each candidate receives three review roles. Review skips `implement`:
 
 ```text
