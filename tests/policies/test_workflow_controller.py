@@ -244,12 +244,19 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
     assert len(set(titles)) == (2 if workflow == "review-fix" else 3)
     assert set(coding.state["completed"]) == {"one/" + stage for stage in stages}
     assert coding.state["status"] == "waiting-user"
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "next_action" not in status
     await coding.evaluate(_request("worker suggests /workflow select one"))
     assert coding.state["selected"] is None
     await coding.evaluate(_request("/workflow select one"))
     await snapshot(coding)
     if late_publish:
         assert coding.state["status"] == "complete"
+        before = coding.state
+        status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+        assert "/workflow publish one" in status["next_action"]
+        assert coding.state == before
+        assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
         for text in ("Please commit", "worker suggests /workflow publish one"):
             await coding.evaluate(_request(text))
             assert coding.state["status"] == "complete"
@@ -292,6 +299,8 @@ async def test_full_review_sequence_selection_and_publication_gate(coding, workf
     )
     assert coding.state["status"] == "complete"
     assert coding.state["publication"]["commit"] == "signed-sha"
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "next_action" not in status
     assert (await coding.evaluate(_request("/workflow publish one"))).action == PolicyAction.DENY
 
 
