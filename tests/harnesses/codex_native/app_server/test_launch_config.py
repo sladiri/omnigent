@@ -401,6 +401,18 @@ def test_native_codex_resource_attributes_reach_server_and_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "OMNIGENT_RUNNER_ENV_PASSTHROUGH",
+        " GITHUB_PAT, ,OPENAI_API_KEY,DBUS_SESSION_BUS_ADDRESS,XDG_RUNTIME_DIR",
+    )
+    for name in (
+        "GITHUB_PAT",
+        "UNRELATED_SECRET",
+        "OPENAI_API_KEY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+    ):
+        monkeypatch.setenv(name, "wrapper-test-token")
     monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment=example,launch_mode=direct")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer test-token")
     app_server = build_codex_native_server(
@@ -413,6 +425,14 @@ def test_native_codex_resource_attributes_reach_server_and_terminal(
         codex_path=sys.executable,
     )
 
+    assert app_server.env["GITHUB_PAT"] == "wrapper-test-token"
+    for name in (
+        "UNRELATED_SECRET",
+        "OPENAI_API_KEY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+    ):
+        assert name not in app_server.env
     for env in (app_server.env, codex_terminal_env(app_server)):
         assert {key: value for key, value in env.items() if key.startswith("OTEL_")} == {
             "OTEL_RESOURCE_ATTRIBUTES": "deployment=example,launch_mode=omni"
