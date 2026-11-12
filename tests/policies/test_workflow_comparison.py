@@ -306,13 +306,23 @@ async def test_final_comparison_requires_actual_evidence_and_separate_selection(
     assert "English only" in presentation
     await coding.evaluate(_request("proceed"))
     assert coding.state["status"] == "waiting-final-selection"
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "next_action" not in status
     assert (
         await coding.evaluate(_request("/workflow select alternative"))
     ).action == PolicyAction.DENY
     await coding.evaluate(_request("/workflow select simple"))
     await snapshot(coding)
     assert coding.state["status"] == "complete"
+    before = coding.state
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "/workflow publish simple" in status["next_action"]
+    assert coding.state == before
     assert (await coding.evaluate(_call("workflow_publish"))).action == PolicyAction.DENY
+    await coding.evaluate(_request("/workflow publish simple"))
+    assert coding.state["status"] == "snapshot"
+    await snapshot(coding)
+    assert coding.state["status"] == "publish"
 
 
 @pytest.mark.asyncio

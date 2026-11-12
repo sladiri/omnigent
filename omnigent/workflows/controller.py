@@ -1814,7 +1814,7 @@ def _coding_controller(
                     "preserved. Use its original runtime or start a new workflow; this "
                     "controller does not migrate or dispatch its stages."
                 )
-            if state["status"] == "idle":
+            elif state["status"] == "idle":
                 status["next_action"] = (
                     "Prepare the start request with workflow_draft. It validates the command "
                     "without starting work. Required: workflow, absolute repository path, task, "
@@ -1836,6 +1836,19 @@ def _coding_controller(
                     "The button approves only the current saved draft. Text clients may send "
                     "/workflow start-draft followed by the saved draft token. "
                     "No implementation starts during drafting."
+                )
+            elif (
+                state["status"] == "complete"
+                and state.get("selected")
+                and not state.get("publication")
+            ):
+                status["next_action"] = (
+                    "Implementation and reviews are complete. Include this optional next step "
+                    "in the handoff without waiting for a publication request: to authorize a "
+                    "signed commit, push, and pull request, send "
+                    f"`/workflow publish {state['selected']}` in this chat. "
+                    "The controller rechecks the reviewed contents before publication. "
+                    "Only the user's command authorizes publication; do not submit it yourself."
                 )
             return _result(state, data=json.dumps(status, sort_keys=True))
         if target == "workflow_present" and state["status"] in {
