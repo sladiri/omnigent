@@ -62,8 +62,8 @@ _logger = logging.getLogger(__name__)
 # so subprocess invocations don't depend on cwd.
 _RUNNER_PATH = str(Path(__file__).parent / "_runner.py")
 
-# Maximum accepted response from the fd 3 pipe (1 MiB).
-_MAX_RESPONSE_BYTES = 1024 * 1024
+# Maximum accepted response from the fd 3 pipe (64 MiB).
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 # Prefix used by the runner in Docker/stdout mode.
 _STDOUT_RESPONSE_PREFIX = "__AP_RESPONSE__:"

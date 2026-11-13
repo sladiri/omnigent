@@ -265,10 +265,17 @@ def test_invoke_empty_args(tmp_path: Path, tool_ctx: ToolContext) -> None:
 
 
 @pytest.mark.parametrize(
-    "size",
-    [128 * 1024, _MAX_RESPONSE_BYTES - len(json.dumps({"result": ""})), 2 * _MAX_RESPONSE_BYTES],
+    "size,accepted",
+    [
+        (128 * 1024, True),
+        (3 * 1024 * 1024, True),
+        (_MAX_RESPONSE_BYTES - len(json.dumps({"result": ""})), True),
+        (_MAX_RESPONSE_BYTES + 1, False),
+    ],
 )
-def test_large_response_drains_all_pipes(tmp_path: Path, tool_ctx: ToolContext, size: int) -> None:
+def test_large_response_drains_all_pipes(
+    tmp_path: Path, tool_ctx: ToolContext, size: int, accepted: bool
+) -> None:
     """Large results and stdout/stderr must not block each other's pipes."""
     py_dir = tmp_path / "tools" / "python"
     _write_decorated_tool(
@@ -290,7 +297,7 @@ def test_large_response_drains_all_pipes(tmp_path: Path, tool_ctx: ToolContext, 
     try:
         thread.join(10)
         assert not thread.is_alive(), "tool response pipe deadlocked"
-        if size > _MAX_RESPONSE_BYTES:
+        if not accepted:
             assert results == [f"Error: tool response exceeds {_MAX_RESPONSE_BYTES}-byte limit"]
         else:
             assert results == ["x" * size]

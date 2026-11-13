@@ -155,6 +155,26 @@ async def begin(probe, publish=True, ids=("one",), workflow="implement-review-fi
     await snapshot(probe)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "compare-review-fix", "review-fix"])
+async def test_snapshot_transport_error_preserves_diagnostic(coding, workflow):
+    await begin(coding)
+    state = coding.state
+    state.update(status="snapshot", snapshot_for="before")
+    state["definition"]["workflow"] = workflow
+    coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
+    error = "Error: tool response exceeds 67108864-byte limit"
+    result = await coding.evaluate(
+        EvaluationContext(
+            phase=Phase.TOOL_RESULT, tool_name="workflow_snapshot", content={"result": error}
+        )
+    )
+    assert coding.state["status"] == "blocked"
+    assert error in coding.state["question"]
+    assert json.loads(result.data)["error"] == error
+    assert coding.state["completed"] == {}
+
+
 async def snapshot(probe, revision=None, files=None):
     revision = revision or probe.state.get("revision", "tree-1")
     await probe.evaluate(
