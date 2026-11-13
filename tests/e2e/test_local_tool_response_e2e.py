@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
+from omnigent.tools.local import _MAX_RESPONSE_BYTES
 from tests._helpers.server_runner import server_runner
 from tests._helpers.session import bind_session_runner, bundle_files, post_session_bundle
 
@@ -90,8 +91,9 @@ executor:
                     (stack.workspace / "release").touch()
                 for i, pending in enumerate(calls):
                     assert pending.result(timeout=20) == f"{i}:" + "x" * (128 * 1024)
-            assert call("oversize", 2 * 1024 * 1024) == (
-                "Error: tool response exceeds 1048576-byte limit"
+            assert call("snapshot", 3 * 1024 * 1024) == "snapshot:" + "x" * (3 * 1024 * 1024)
+            assert call("oversize", _MAX_RESPONSE_BYTES + 1) == (
+                f"Error: tool response exceeds {_MAX_RESPONSE_BYTES}-byte limit"
             )
             assert call("after", 1) == "after:x"
             stack.restart_server()

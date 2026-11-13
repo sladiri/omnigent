@@ -903,6 +903,8 @@ def _apply_rechecks(state: Json, reports: Json, findings: dict[str, str]) -> Non
 
 def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
     if not isinstance(snapshot.get("revision"), str) or not snapshot["revision"]:
+        if snapshot.get("error"):
+            return _block(state, f"Snapshot failed: {snapshot['error']}")
         return _block(state, "Snapshot failed; retry the snapshot before continuing")
     candidate, stage = _candidate(state), _stage(state)
     if snapshot.get("branch") != candidate["branch"]:
@@ -1932,6 +1934,10 @@ def _coding_controller(
             _advance_candidate(state)
             return _result(state)
         if target == "workflow_snapshot" and state["status"] == "snapshot":
+            data = event.get("data")
+            raw = data.get("result") if isinstance(data, dict) else data
+            if not result and isinstance(raw, str) and raw:
+                result = {"error": raw}
             try:
                 response = _accept_snapshot(state, result)
                 return {
