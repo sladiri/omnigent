@@ -192,9 +192,23 @@ def _stage(state: Json) -> str:
 
 def _candidate(state: Json) -> Json:
     if state.get("current") in comparison.ANALYSIS_STAGES:
-        return {"workspace": state["definition"]["repository"]}
+        definition = state["definition"]
+        return {
+            "workspace": definition["repository"],
+            "repositories": {
+                item["id"]: {**item, "workspace": item["repository"]}
+                for item in definition.get("repositories", [])
+            },
+        }
     candidate_id = state.get("selected") or str(state["current"]).split("/")[0]
     return next(c for c in state["candidates"] if c["id"] == candidate_id)
+
+
+def _workspaces(candidate: Json) -> list[Path]:
+    return [
+        Path(item["workspace"]).resolve()
+        for item in [candidate, *candidate.get("repositories", {}).values()]
+    ]
 
 
 def _set_stage(state: Json, candidate: Json, stage: str) -> None:
@@ -340,6 +354,9 @@ def _definition(
         raise ValueError("Candidate IDs must be unique")
     if type(definition.get("publish", False)) is not bool:
         raise ValueError("publish must be boolean")
+    from omnigent.workflows.operations import validate_repositories
+
+    validate_repositories(definition)
     definition.update(_execution_settings(definition, worker_defaults, stages))
     definition["run_id"] = conversation_id
     definition.setdefault("remote", "origin")
@@ -356,6 +373,7 @@ def draft_start_message(
     branch: str = "",
     worker_defaults: dict[str, str] | None = None,
     stages: dict[str, dict[str, str]] | None = None,
+    repositories: list[Json] | None = None,
 ) -> str:
     """Validate a proposed start command without starting work or changing state."""
     try:
@@ -370,6 +388,7 @@ def draft_start_message(
                     "baseline": baseline,
                     "base": base,
                     "publish": publish,
+                    **({"repositories": repositories} if repositories is not None else {}),
                     "worker_defaults": worker_defaults if worker_defaults is not None else {},
                     "stages": stages if stages is not None else {},
                     "candidates": []
@@ -442,6 +461,7 @@ def draft_preview(session_state: Json) -> Json:
             },
             "branch": next((c.get("branch") for c in definition["candidates"]), None),
             "publish": definition.get("publish", False),
+            "repositories": definition.get("repositories", []),
         }
     }
 
@@ -470,17 +490,25 @@ def _patch_paths(args: Json) -> list[str]:
     return paths
 
 
-def _repository_read_permission(event: PolicyEvent, repository: str | None) -> PolicyResponse:
+def _repository_read_permission(
+    event: PolicyEvent, repository: str | None, repositories: list[str] | None = None
+) -> PolicyResponse:
     if event.get("type") == "tool_result":
         return {"result": "ALLOW"}
     data = event.get("data")
     args = data.get("arguments", {}) if isinstance(data, dict) else {}
     if not isinstance(args, dict) or not repository or not Path(repository).is_absolute():
         return _deny("Select a source repository before reading it")
+    requested = args.get("repository") or repository
+    if requested not in [repository, *(repositories or [])]:
+        return _deny("Reads must use an assigned repository")
+    repository = requested
     return {"result": "ALLOW", "data": {**args, "repository": repository}}
 
 
-def _journal_permission(event: PolicyEvent, repository: str | None) -> PolicyResponse:
+def _journal_permission(
+    event: PolicyEvent, repository: str | None, repositories: list[str] | None = None
+) -> PolicyResponse:
     """Bind journal operations to the assigned repository without changing workflow state."""
     from omnigent.workflows.journal import ACTIONS
 
@@ -492,6 +520,10 @@ def _journal_permission(event: PolicyEvent, repository: str | None) -> PolicyRes
         return _deny("Use a supported workflow_journal action")
     if not repository or not Path(repository).is_absolute():
         return _deny("Select a repository before journaling")
+    requested = args.get("repository") or repository
+    if requested not in [repository, *(repositories or [])]:
+        return _deny("Journaling must use an assigned repository")
+    repository = requested
     return {"result": "ALLOW", "data": {**args, "repository": repository}}
 
 
@@ -568,10 +600,25 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     if github is not None:
         return github
     if target == "workflow_read":
-        return _repository_read_permission(event, state.get("definition", {}).get("repository"))
+        definition = state.get("definition", {})
+        return _repository_read_permission(
+            event,
+            definition.get("repository"),
+            [
+                *[item["repository"] for item in definition.get("repositories", [])],
+                *[
+                    str(path)
+                    for path in _workspaces(_candidate({**state, "current": pending["stage"]}))
+                ],
+            ],
+        )
     if target == "workflow_journal":
-        workspace = _candidate({**state, "current": pending["stage"]})["workspace"]
-        return _journal_permission(event, workspace)
+        candidate = _candidate({**state, "current": pending["stage"]})
+        return _journal_permission(
+            event,
+            candidate["workspace"],
+            [item["workspace"] for item in candidate.get("repositories", {}).values()],
+        )
     if target.startswith("workflow_") or target in {
         "sys_session_send",
         "sys_session_create",
@@ -583,18 +630,24 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     if not isinstance(args, dict):
         return _deny("Worker tool arguments must be an object")
     stage = pending["stage"]
-    workspace = Path(_candidate({**state, "current": stage})["workspace"]).resolve()
-    cwd = args.get("workdir", args.get("cwd", str(workspace)))
+    workspaces = _workspaces(_candidate({**state, "current": stage}))
+    command = str(args.get("command", args.get("cmd", "")))
+    prefix_workspace = next(
+        (root for root in workspaces if command.startswith(f"cd {shlex.quote(str(root))} && ")),
+        None,
+    )
+    cwd = args.get("workdir", args.get("cwd", str(prefix_workspace or workspaces[0])))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return _deny("Worker workdir must be absolute")
     directory = Path(cwd).resolve()
-    if not directory.is_relative_to(workspace):
+    workspace = next((root for root in workspaces if directory.is_relative_to(root)), None)
+    if workspace is None:
         return _deny("Worker workdir must stay in the candidate")
     if stage in comparison.ANALYSIS_STAGES:
         if "command" in args or "cmd" in args:
             if target not in {"sys_os_shell", "Bash", "exec_command", "shell_command"} or args.get(
                 "command", args.get("cmd")
-            ) not in _analysis_commands(workspace):
+            ) not in set().union(*(_analysis_commands(root) for root in workspaces)):
                 return _deny(
                     "Exploration and comparison allow only the exact read commands in the brief"
                 )
@@ -618,17 +671,25 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
                 resolved.is_relative_to(root) for root in skill_paths
             )
             result_read = stage == "compare-results" and any(
-                resolved.is_relative_to(Path(candidate["workspace"]).resolve())
+                resolved.is_relative_to(root)
                 for candidate in state.get("candidates", [])
+                for root in _workspaces(candidate)
             )
-            if not resolved.is_relative_to(workspace) and not skill_read and not result_read:
+            if (
+                not any(resolved.is_relative_to(root) for root in workspaces)
+                and not skill_read
+                and not result_read
+            ):
                 return _deny("Worker paths must stay in the candidate or installed skill files")
     if target == "apply_patch":
         if stage.split("/")[-1] in _REVIEW:
             return _deny("Review stages cannot apply patches")
         try:
             paths = _patch_paths(args)
-            if any(not (directory / path).resolve().is_relative_to(workspace) for path in paths):
+            if any(
+                not any((directory / path).resolve().is_relative_to(root) for root in workspaces)
+                for path in paths
+            ):
                 return _deny("Every patch path must stay in the candidate")
         except (ValueError, OSError, RuntimeError):
             return _deny("Cannot determine every patch path; use an explicit apply_patch patch")
@@ -639,7 +700,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     if "command" in args or "cmd" in args:
         cwd = args.get("workdir", args.get("cwd"))
         command = str(args.get("command", args.get("cmd", "")))
-        explicit_cd = command.startswith(f"cd {shlex.quote(str(workspace))} && ")
+        explicit_cd = prefix_workspace is not None
         if not isinstance(cwd, str) and not explicit_cd:
             return _deny("Shell calls must explicitly set the candidate workdir")
     command = str(args.get("command", args.get("cmd", "")))
@@ -648,10 +709,10 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     policy_event: PolicyEvent = event
     if "command" in args or "cmd" in args:
         # Resolve the brief's exact cd prefix before checking relative Git paths.
-        prefix = f"cd {shlex.quote(str(workspace))} && "
+        prefix = f"cd {shlex.quote(str(prefix_workspace or workspace))} && "
         shell_args = {**args, "command": command.removeprefix(prefix)}
         if command.startswith(prefix):
-            shell_args["workdir"] = str(workspace)
+            shell_args["workdir"] = str(prefix_workspace or workspace)
         policy_event = {
             **event,
             "target": "sys_os_shell",
@@ -661,7 +722,9 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
     for policy in (
         github_policy(),
         block_working_dir_changes(
-            block_worktree=False, allowed_dirs=[str(workspace)], allow_sibling_worktrees=False
+            block_worktree=False,
+            allowed_dirs=[str(root) for root in workspaces],
+            allow_sibling_worktrees=False,
         ),
         block_working_dir_changes(
             block_cd=False,
@@ -695,8 +758,16 @@ def _analysis_commands(workspace: Path) -> set[str]:
 
 def _brief(state: Json) -> str:
     if state.get("current") in comparison.ANALYSIS_STAGES:
-        commands = sorted(_analysis_commands(Path(state["definition"]["repository"]).resolve()))
-        return comparison.brief(state) + "\nAllowed read commands:\n" + "\n".join(commands)
+        commands = sorted(
+            set().union(*(_analysis_commands(root) for root in _workspaces(_candidate(state))))
+        )
+        return (
+            comparison.brief(state)
+            + "\nAdditional repositories: "
+            + json.dumps(state["definition"].get("repositories", []))
+            + "\nAllowed read commands:\n"
+            + "\n".join(commands)
+        )
     candidate, stage = _candidate(state), _stage(state)
     review = stage in _REVIEW
     skill = "code-review" if "-b-" in stage else "ponytail and ponytail-review"
@@ -739,6 +810,7 @@ def _brief(state: Json) -> str:
             f"Worktree: {candidate['workspace']}",
             f"Branch: {candidate['branch']}",
             f"Review baseline: {candidate['baseline']}",
+            f"Additional repository assignments: {json.dumps(candidate.get('repositories', {}))}",
             f"Reviewed revision: {state['revision']}",
             task,
             axes,
@@ -748,6 +820,14 @@ def _brief(state: Json) -> str:
             "Use sys_os_write or sys_os_edit with absolute candidate paths, or apply_patch "
             "with explicit patch text. Every patch path, including rename destinations, "
             "must resolve inside this candidate. Review stages remain read-only.",
+            "Work in every assigned repository needed for the task. Each assignment has its "
+            "own worktree, branch, and fixed review baseline. Read its local instructions. "
+            "Use that worktree as workdir or its exact cd prefix. Reviews cover all assigned "
+            "repositories, including uncommitted changes. For source instructions or Beads, "
+            "workflow_read/workflow_journal accept the assigned repository/worktree path. "
+            "With multiple repositories, prefix finding paths with the repository ID and :: "
+            "(primary::path or <id>::path). If another repository is required, return BLOCKED "
+            "with its path, baseline, and target branch so the coordinator can assign it.",
             "Do not commit, push, create a PR, deploy, or advance another workflow stage. "
             "Native delegation for independent read-only review is allowed; Omnigent session "
             "dispatch is reserved to the controller.",
@@ -801,6 +881,8 @@ def _findings(report: Json) -> dict[str, str]:
 
 
 def _generated_graph_path(path: str) -> bool:
+    if "::" in path:
+        path = path.split("::", 1)[1]
     parts = Path(path).parts
     if not parts or parts[0] != "graphify-out" or ".." in parts:
         return False
@@ -909,6 +991,11 @@ def _accept_snapshot(state: Json, snapshot: Json) -> PolicyResponse:
     candidate, stage = _candidate(state), _stage(state)
     if snapshot.get("branch") != candidate["branch"]:
         return _block(state, "Candidate branch changed")
+    if candidate.get("repositories") and snapshot.get("branches") != {
+        "primary": candidate["branch"],
+        **{key: value["branch"] for key, value in candidate["repositories"].items()},
+    }:
+        return _block(state, "Assigned repository branches changed or snapshot is incomplete")
     previous = state.setdefault("snapshots", {}).get(
         candidate["id"], {"revision": state.get("revision")}
     )
@@ -1441,8 +1528,16 @@ def _coding_controller(
                 session = get_conversation_store().get_conversation(session_id)
                 repository = session.workspace if session else None
             if target == "workflow_read":
-                return _repository_read_permission(event, repository)
-            return _journal_permission(event, repository)
+                return _repository_read_permission(
+                    event,
+                    repository,
+                    [item["repository"] for item in definition.get("repositories", [])],
+                )
+            return _journal_permission(
+                event,
+                repository,
+                [item["repository"] for item in definition.get("repositories", [])],
+            )
         if state["status"] == "cancelled":
             if phase == "tool_call" and target not in READ_TOOLS:
                 return _deny("This workflow was cancelled")
@@ -1648,6 +1743,39 @@ def _coding_controller(
                     _retry_stage(state)
             return _result(state)
         if phase == "tool_call":
+            if target == "workflow_prepare" and state["status"] in {"blocked", "waiting-user"}:
+                if (
+                    state["status"] not in {"blocked", "waiting-user"}
+                    or not state.get("candidates")
+                    or not state.get("current")
+                    or state.get("scheduler_version") != 2
+                    or state.get("selected")
+                    or state.get("publication")
+                    or _pending(state)
+                ):
+                    return _deny("Add repositories only at a stopped stage before selection")
+                data = event.get("data")
+                args = data.get("arguments", {}) if isinstance(data, dict) else {}
+                if not isinstance(args, dict):
+                    return _deny("Repository assignment must be an object")
+                additions = args.get("definition")
+                if (
+                    not isinstance(additions, dict)
+                    or set(additions) != {"repositories"}
+                    or not isinstance(additions["repositories"], list)
+                    or not additions["repositories"]
+                ):
+                    return _deny("Supply definition: {repositories: [new repository assignments]}")
+                definition = copy.deepcopy(state["definition"])
+                definition.setdefault("repositories", []).extend(additions["repositories"])
+                from omnigent.workflows.operations import validate_repositories
+
+                try:
+                    validate_repositories(definition)
+                except (ValueError, TypeError) as exc:
+                    return _deny(str(exc))
+                state["repository_preparation"] = definition
+                return _result(state, data={"definition": definition})
             if target == "workflow_review_checkout":
                 if state["status"] != "idle" or state.get("requested_workflow") not in (
                     None,
@@ -1688,7 +1816,15 @@ def _coding_controller(
                 candidate = _candidate(state)
                 return _result(
                     state,
-                    data={"workspace": candidate["workspace"], "baseline": candidate["baseline"]},
+                    data={
+                        "workspace": candidate["workspace"],
+                        "baseline": candidate["baseline"],
+                        **(
+                            {"repositories": candidate["repositories"]}
+                            if candidate.get("repositories")
+                            else {}
+                        ),
+                    },
                 )
             if (
                 target == "workflow_publish"
@@ -1716,6 +1852,30 @@ def _coding_controller(
                             cast(str, metadata["body"]),
                             state.get("pr_template", ""),
                         )
+                        if candidate.get("repositories"):
+                            publications = supplied.get("publications")
+                            if not isinstance(publications, dict) or set(publications) != set(
+                                candidate["repositories"]
+                            ):
+                                raise ValueError(
+                                    "Supply title/body in publications for each repository ID"
+                                )
+                            for identifier, assignment in candidate["repositories"].items():
+                                entry = publications[identifier]
+                                if (
+                                    not isinstance(entry, dict)
+                                    or set(entry) != {"title", "body"}
+                                    or not all(isinstance(value, str) for value in entry.values())
+                                ):
+                                    raise ValueError(
+                                        "Each repository publication needs title and body strings"
+                                    )
+                                validate_publication_text(
+                                    entry["title"],
+                                    entry["body"],
+                                    assignment.get("pr_template", ""),
+                                )
+                            metadata["publications"] = publications
                     except ValueError as exc:
                         return _deny(str(exc))
                     state["publication_input"] = metadata
@@ -1727,6 +1887,11 @@ def _coding_controller(
                         **state["publication_input"],
                         "base": definition["base"],
                         "remote": definition["remote"],
+                        **(
+                            {"repositories": candidate["repositories"]}
+                            if candidate.get("repositories")
+                            else {}
+                        ),
                     },
                 )
             paired_stage = state.get("parallel", {}).get("next")
@@ -1880,6 +2045,30 @@ def _coding_controller(
                     "/workflow start-draft followed by the saved draft token. "
                     "No implementation starts during drafting."
                 )
+                status["next_action"] += (
+                    " For work across repositories, include repositories in workflow_draft: "
+                    "a list of {id, repository, baseline, base}, with optional branch/workspace "
+                    "for a single candidate. Each repository gets its own assigned worktree "
+                    "and fixed baseline. Include every known repository in the start summary."
+                )
+            elif (
+                state["status"] in {"blocked", "waiting-user"}
+                and state.get("current")
+                and state.get("candidates")
+                and not _pending(state)
+                and not state.get("selected")
+            ):
+                status["next_action"] = (
+                    "Show the exact question or blocker. If the authorized task needs an "
+                    "additional repository, call workflow_prepare with definition: "
+                    "{repositories: [{id, repository, baseline, base}]}, listing only new "
+                    "assignments, optionally branch/workspace for one "
+                    "candidate. Resolve its exact path, baseline and target branch from known "
+                    "context; ask only for missing scope or ownership decisions. This prepares "
+                    "dedicated worktrees, preserves existing work, clears old approval, and "
+                    "restarts the required stages across all repositories. Otherwise wait for "
+                    "the user's answer or recovery instructions."
+                )
             elif (
                 state["status"] == "complete"
                 and state.get("selected")
@@ -1906,6 +2095,64 @@ def _coding_controller(
         if target == "workflow_reconcile":
             return _reconcile(state, session_id)
         result = _decode(event)
+        if target == "workflow_prepare" and state.get("repository_preparation"):
+            if state["status"] not in {"blocked", "waiting-user"} or _pending(state):
+                return _deny(
+                    "Workflow advanced during preparation; reconcile before assigning repositories"
+                )
+            definition = state["repository_preparation"]
+            if not result.get("candidates") or result.get("run_id") != definition["run_id"]:
+                return _block(
+                    state,
+                    "Repository preparation failed; inspect tool error and retry",
+                )
+            state.setdefault("repository_history", []).append(
+                {
+                    "definition": state["definition"],
+                    "completed": state["completed"],
+                    "verified": state["verified"],
+                    "question": state.get("question"),
+                }
+            )
+            state.setdefault("decisions", []).append(
+                {
+                    "repository_assignments": definition["repositories"][
+                        len(state["definition"].get("repositories", [])) :
+                    ],
+                    "stage": state["current"],
+                    "question": state.get("question"),
+                }
+            )
+            state.update(
+                definition=definition,
+                candidates=result["candidates"],
+                completed={},
+                verified={},
+                reviews={},
+                findings={},
+                fix_attempts={},
+                finding_roles={},
+                finding_paths={},
+                applicable_reviews={},
+                snapshots={},
+                selected=None,
+                question=None,
+            )
+            for key in (
+                "repository_preparation",
+                "revision",
+                "rechecks",
+                "retained_checks",
+                "fix_context",
+                "review_wait",
+                "publication_input",
+                "publication_authorized_revision",
+                "result_comparison",
+                "presented",
+            ):
+                state.pop(key, None)
+            _advance_candidate(state)
+            return _result(state)
         if target == "workflow_prepare" and state["status"] == "prepare":
             if (
                 not result.get("candidates")
@@ -1949,7 +2196,23 @@ def _coding_controller(
             except (ValueError, TypeError, KeyError) as exc:
                 return _block(state, f"Invalid stage evidence: {exc}")
         if target == "workflow_publish" and state["status"] == "publish":
-            if not result.get("commit") or not result.get("pr_url"):
+            repositories = _candidate(state).get("repositories", {})
+            published = result.get("repositories", {})
+            if (
+                not result.get("commit")
+                or not result.get("pr_url")
+                or (
+                    repositories
+                    and (
+                        not isinstance(published, dict)
+                        or set(published) != set(repositories)
+                        or any(
+                            not entry.get("commit") or not entry.get("pr_url")
+                            for entry in published.values()
+                        )
+                    )
+                )
+            ):
                 return _block(
                     state, "Publication incomplete; retry reconciles commit, remote and PR"
                 )

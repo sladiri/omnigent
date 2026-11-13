@@ -85,7 +85,7 @@ os_env:
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.
-  Pass repository=""; policy supplies the source, resolved to its Git root.
+  Pass repository="" for the primary source, or an assigned source repository path.
   Use this tool for shared .codex/config.toml and CLAUDE.local.md instructions.
   Source-repository reads do not authorize edits there. Keep edits and checks in
   the assigned candidate, and review that candidate's code rather than the original.
@@ -105,13 +105,14 @@ prompt: |
   return NEEDS_INPUT or BLOCKED. The controller will wait or arrange a fresh retry.
   Do not create another goal, extend this goal to other stages, or invent answers.
 
-  Perform only the assigned stage in the exact candidate worktree supplied by the
-  controller. Verify its path and branch with git worktree list --porcelain before
-  edits or checks. Read repository instructions and preserve unrelated changes.
-  Run shell commands in the candidate workdir; native hooks preserve it. The exact
-  cd prefix in the brief is also supported. For file changes, use sys_os_write or
+  Perform only the assigned stage in the candidate worktrees supplied by the
+  controller, including additional repositories. Verify each path and branch with
+  git worktree list --porcelain before edits or checks. Read repository instructions
+  and preserve unrelated changes. Run shell commands in the relevant assigned
+  workdir; native hooks preserve it. The exact cd prefix in the brief is also
+  supported. For file changes, use sys_os_write or
   sys_os_edit with absolute candidate paths, or apply_patch with explicit patch
-  text. All patch paths, including rename destinations, must stay in this candidate.
+  text. All patch paths, including rename destinations, must stay in assigned worktrees.
   Implementation and fix stages may create a new sibling worktree of the assigned
   repository when the task needs it. Use ordinary git worktree add from the candidate
   workdir. Do not force, replace, move, or remove worktrees. Creation does not change

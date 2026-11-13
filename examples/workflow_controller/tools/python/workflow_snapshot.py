@@ -6,6 +6,6 @@ from omnigent.workflows.operations import workflow_snapshot as snapshot
 
 
 @tool
-def workflow_snapshot(workspace: str, baseline: str = "") -> str:
+def workflow_snapshot(workspace: str, baseline: str = "", repositories: dict | None = None) -> str:
     """Read a revision of all tracked and nonignored working files."""
-    return snapshot(workspace, baseline)
+    return snapshot(workspace, baseline, repositories)
