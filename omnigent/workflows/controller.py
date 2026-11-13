@@ -391,12 +391,27 @@ def draft_start_message(
     return json.dumps({"valid": True, "command": "/workflow start " + json.dumps(definition)})
 
 
+def _preparation_blocked(state: Json) -> bool:
+    return (
+        state.get("status") == "blocked"
+        and state.get("scheduler_version") == 2
+        and bool(state.get("definition"))
+        and not any(state.get(key) for key in ("current", "candidates", "completed", "selected"))
+        and not _pending(state)
+        and not comparison.enabled(state)
+    )
+
+
+def _can_draft(state: Json) -> bool:
+    return state.get("status") == "idle" or _preparation_blocked(state)
+
+
 def question_preview(state: Json) -> Json | None:
     """Bind the UI answer to this exact persisted stage question."""
     if (
         state.get("status") not in {"waiting-user", "blocked"}
         or not state.get("question")
-        or not state.get("current")
+        or (not state.get("current") and not _preparation_blocked(state))
         or state.get("selected")
         or _pending(state)
     ):
@@ -414,7 +429,7 @@ def question_preview(state: Json) -> Json | None:
 def draft_preview(session_state: Json) -> Json:
     """Return only the current draft details needed for user approval."""
     state = session_state.get(STATE_KEY, {})
-    draft = state.get("draft") if state.get("status") == "idle" else None
+    draft = state.get("draft") if _can_draft(state) else None
     if not draft:
         return {"draft": None, "question": question_preview(state)}
     definition = draft["definition"]
@@ -1404,6 +1419,12 @@ def _coding_controller(
             Json,
             copy.deepcopy(event.get("session_state", {}).get(STATE_KEY) or {"status": "idle"}),
         )
+        preparation_blocked = _preparation_blocked(state)
+        run_id = (
+            f"{session_id}-prepare-{len(state.get('preparation_history', [])) + 1}"
+            if preparation_blocked
+            else session_id
+        )
         if target in {"workflow_journal", "workflow_read"} and phase in {
             "tool_call",
             "tool_result",
@@ -1448,7 +1469,7 @@ def _coding_controller(
             if text.startswith("/workflow start-draft "):
                 draft = state.get("draft")
                 if (
-                    state["status"] != "idle"
+                    not _can_draft(state)
                     or not draft
                     or text != "/workflow start-draft " + draft["token"]
                 ):
@@ -1457,7 +1478,7 @@ def _coding_controller(
                     )
                 text = draft["command"]
                 approved_draft = True
-            if state["status"] == "idle":
+            if _can_draft(state):
                 if text:
                     state.pop("draft", None)
                 for name in WORKFLOWS:
@@ -1472,7 +1493,7 @@ def _coding_controller(
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
             if text.startswith("/workflow start "):
-                if state["status"] != "idle":
+                if not _can_draft(state):
                     return _deny("This session already owns a workflow; use a new session")
                 try:
                     raw = json.loads(text.removeprefix("/workflow start "))
@@ -1486,10 +1507,15 @@ def _coding_controller(
                             )
                         raw["workflow"] = requested
                     definition = _definition(
-                        json.dumps(raw), session_id, **({} if approved_draft else execution)
+                        json.dumps(raw), run_id, **({} if approved_draft else execution)
                     )
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
+                history = list(state.get("preparation_history", []))
+                if preparation_blocked:
+                    history.append(
+                        {"definition": state["definition"], "question": state["question"]}
+                    )
                 state = {
                     "status": "prepare",
                     "scheduler_version": 2,
@@ -1502,6 +1528,8 @@ def _coding_controller(
                     "selected": None,
                     "pending": None,
                     "question": None,
+                    **({"preparation_history": history} if history else {}),
+                    **({"decisions": state["decisions"]} if state.get("decisions") else {}),
                 }
                 if comparison.enabled(state):
                     comparison.analysis_stage(state, "explore")
@@ -1546,12 +1574,14 @@ def _coding_controller(
                     {
                         "command": text,
                         "question": state["question"],
-                        "stage": state["current"],
+                        "stage": state.get("current") or "prepare",
                         "revision": state.get("revision"),
                         "review": review_wait,
                     }
                 )
                 state["answer"] = answer
+                if preparation_blocked:
+                    return _result(state)
                 _retry_stage(state)
                 if review_wait.get("next_stage"):
                     _set_stage(state, _candidate(state), review_wait["next_stage"])
@@ -1625,7 +1655,7 @@ def _coding_controller(
                         "PR checkout preparation is only available before starting Review"
                     )
                 return {"result": "ALLOW"}
-            if target == "workflow_draft" and state["status"] == "idle":
+            if target == "workflow_draft" and _can_draft(state):
                 state.pop("draft", None)
                 data = event.get("data")
                 args = data.get("arguments", {}) if isinstance(data, dict) else {}
@@ -1783,7 +1813,7 @@ def _coding_controller(
                     "workspace": _candidate(state)["workspace"],
                 },
             )
-        if target == "workflow_draft" and state["status"] == "idle":
+        if target == "workflow_draft" and _can_draft(state):
             state.pop("draft", None)
             result = _decode(event)
             if result.get("valid") is True:
@@ -1792,7 +1822,7 @@ def _coding_controller(
                     return _deny("Invalid draft command")
                 try:
                     definition = _definition(
-                        command.removeprefix("/workflow start "), session_id, **execution
+                        command.removeprefix("/workflow start "), run_id, **execution
                     )
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
@@ -1813,6 +1843,17 @@ def _coding_controller(
                     "This saved run uses the previous scheduler. Its state and workers are "
                     "preserved. Use its original runtime or start a new workflow; this "
                     "controller does not migrate or dispatch its stages."
+                )
+            elif preparation_blocked:
+                status["next_action"] = (
+                    "Preparation failed before any worker started. Inspect the tool error. "
+                    "If inputs must change, collect the user's recovery instructions through "
+                    "Answer (or /workflow answer), then use workflow_draft to validate a revised "
+                    "start request in this session. Use instructions already supplied without "
+                    "asking again. Preserve prior worktrees; use a new branch when requested. "
+                    "Ask the user to click Start workflow to approve the revised settings. "
+                    "The revised preparation uses a new ownership record. If only an external "
+                    "setup problem was repaired, /workflow retry reuses the original definition."
                 )
             elif state["status"] == "idle":
                 status["next_action"] = (
