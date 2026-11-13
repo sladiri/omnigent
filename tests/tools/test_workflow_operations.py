@@ -175,6 +175,62 @@ def test_prepare_refuses_dirty_baseline_and_unowned_branch(repository: Path) -> 
         operations.workflow_prepare(definition)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["ownership", "setup"])
+async def test_preparation_redraft_preserves_prior_worktrees(
+    repository, db_uri, monkeypatch, failure
+):
+    from omnigent.spec.parser import parse
+    from omnigent.spec.types import PolicyAction
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+    from tests.policies.test_workflow_controller import CONFIG, _call, _Probe, _request, output
+
+    controller = _Probe(SqlAlchemyConversationStore(db_uri), parse(CONFIG))
+    definition = {
+        **_definition(repository),
+        "baseline": "HEAD",
+        "base": "main",
+        "candidates": [{"id": "alpha", "task": "Greeting"}],
+    }
+    definition["candidates"][0]["branch"] = "existing-pr"
+    if failure == "ownership":
+        operations._git(repository, "branch", "existing-pr")
+    else:
+
+        def fail_setup(workspace, definition):
+            (workspace / "hello.txt").write_text("preserve earlier work\n")
+            raise ValueError("Setup failed")
+
+        monkeypatch.setattr(operations, "_setup_worktree", fail_setup)
+    started = await controller.evaluate(_request("/workflow start " + json.dumps(definition)))
+    assert started.action == PolicyAction.ALLOW, started.reason
+    original = (await controller.evaluate(_call("workflow_prepare"))).data["definition"]
+    with pytest.raises(ValueError, match=r"ownership|Setup failed"):
+        operations.workflow_prepare(original)
+    await controller.evaluate(output("workflow_prepare", {"error": failure}))
+    old_worktrees = operations._git(repository, "worktree", "list", "--porcelain")
+    monkeypatch.setattr(operations, "_setup_worktree", lambda *_: None)
+    definition["candidates"][0]["branch"] = "new-pr"
+    revised = {"valid": True, "command": "/workflow start " + json.dumps(definition)}
+    await controller.evaluate(output("workflow_draft", revised))
+    assert "draft" in controller.state
+    token = controller.state["draft"]["token"]
+    assert (
+        await controller.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.ALLOW
+    updated = (await controller.evaluate(_call("workflow_prepare"))).data["definition"]
+    prepared = json.loads(operations.workflow_prepare(updated))
+    await controller.evaluate(output("workflow_prepare", prepared))
+    assert controller.state["current"] == "alpha/implement"
+    assert old_worktrees in operations._git(repository, "worktree", "list", "--porcelain")
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    assert operations._git(workspace, "branch", "--show-current") == "new-pr"
+    assert (workspace / "hello.txt").read_text() == "hello\n"
+    if failure == "setup":
+        prior = repository.parent / f"{repository.name}-{controller.session_id}-alpha"
+        assert (prior / "hello.txt").read_text() == "preserve earlier work\n"
+
+
 def test_prepare_runs_setup_helper_before_return(repository: Path, tmp_path: Path) -> None:
     helper = tmp_path / "setup.py"
     helper.write_text(

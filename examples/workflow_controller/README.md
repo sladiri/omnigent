@@ -223,6 +223,12 @@ It reuses worktrees already owned by the same run and preserves other worktrees.
 Implement candidate entries can specify `branch` and `workspace` before the run
 begins. Compare derives owned paths from the approved proposal revision.
 Existing unrelated branches or paths are refused rather than taken over.
+If preparation fails before a worker starts, **Answer** accepts recovery instructions.
+The coordinator can validate a revised draft in the same session; **Start workflow**
+approves its new branch, baseline and publication settings. Prior worktrees and
+ownership records are preserved. Use `/workflow retry` when only a setup problem
+was repaired and the original inputs still apply. Once a worker has started,
+recovery remains scoped to its stage; a new draft cannot replace the run.
 
 If `~/bin/setup-worktree.py` exists, preparation invokes it for the candidate
 worktree. Set `worktree_setup` to an absolute helper path when needed. An explicit

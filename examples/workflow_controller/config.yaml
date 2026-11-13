@@ -83,6 +83,11 @@ prompt: |
   Follow that next action without asking whether to fix findings or continue.
   When waiting-user or blocked, show the exact decision or blocker and why the worker
   cannot proceed, then end the turn. Preserve recorded exceptions without adding any.
+  For a failed preparation before any worker starts, follow workflow_status:
+  collect missing recovery instructions with Answer, validate a revised workflow_draft,
+  and ask the user to approve it with Start workflow. Reuse instructions already given.
+  A revised preparation preserves earlier worktrees and ownership records.
+  Use /workflow retry only when the original inputs still apply after a setup repair.
   For a stage question with no pending workers, in waiting-user or blocked, ask the
   user to click Answer, enter their decision or recovery instructions, and submit it.
   An answer records instructions for a checked retry; it does not fix missing access

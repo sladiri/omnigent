@@ -966,6 +966,81 @@ async def test_prepared_draft_requires_current_explicit_user_selection(coding, s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("answer_first", [False, True])
+async def test_failed_preparation_can_redraft_without_reusing_ownership(coding, answer_first):
+    from omnigent.workflows.controller import draft_preview, draft_start_message
+
+    args = {
+        "workflow": "implement-review-fix",
+        "repository": "/tmp/repository",
+        "task": "Fix the existing PR",
+        "baseline": "HEAD",
+        "base": "main",
+        "branch": "existing-pr",
+    }
+    original = json.loads(draft_start_message(**args))
+    await coding.evaluate(_request(original["command"]))
+    await coding.evaluate(output("workflow_prepare", {"error": "Branch has no ownership"}))
+    before = coding.state["definition"]
+    preview = draft_preview({STATE_KEY: coding.state})
+    assert preview["question"] is not None
+    status = json.loads((await coding.evaluate(output("workflow_status", {}))).data)
+    assert "workflow_draft" in status["next_action"]
+    if answer_first:
+        assert (
+            await coding.evaluate(
+                _request(
+                    "/workflow answer-question "
+                    + preview["question"]["token"]
+                    + " Create a new branch and publish a new PR"
+                )
+            )
+        ).action == PolicyAction.ALLOW
+    revised = json.loads(draft_start_message(**{**args, "branch": "new-pr", "publish": True}))
+    assert (await coding.evaluate(_call("workflow_draft"))).action == PolicyAction.ALLOW
+    await coding.evaluate(output("workflow_draft", revised))
+    preview = draft_preview({STATE_KEY: coding.state})
+    assert preview["draft"]["branch"] == "new-pr"
+    assert preview["draft"]["publish"] is True
+    assert coding.state["definition"] == before
+    assert (await coding.evaluate(_call("workflow_prepare"))).action == PolicyAction.DENY
+    assert (await coding.evaluate(_call())).action == PolicyAction.DENY
+    token = preview["draft"]["token"]
+    await coding.evaluate(_request("Change the branch again"))
+    assert (
+        await coding.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.DENY
+    await coding.evaluate(output("workflow_draft", revised))
+    token = coding.state["draft"]["token"]
+    assert (
+        await coding.evaluate(_request("/workflow start-draft " + token))
+    ).action == PolicyAction.ALLOW
+    prepared = (await coding.evaluate(_call("workflow_prepare"))).data["definition"]
+    assert prepared["run_id"] == coding.session_id + "-prepare-1"
+    assert prepared["candidates"][0]["branch"] == "new-pr"
+    assert prepared["publish"] is True
+    assert coding.state["preparation_history"][0]["definition"] == before
+    # A second preparation failure must not collide with either earlier manifest.
+    await coding.evaluate(output("workflow_prepare", {"error": "Setup helper failed"}))
+    await coding.evaluate(output("workflow_draft", revised))
+    token = coding.state["draft"]["token"]
+    await coding.evaluate(_request("/workflow start-draft " + token))
+    assert coding.state["definition"]["run_id"] == coding.session_id + "-prepare-2"
+
+
+@pytest.mark.asyncio
+async def test_stage_failure_cannot_replace_the_run_with_a_draft(coding):
+    await begin(coding)
+    await finish(coding, outcome="BLOCKED")
+    assert (await coding.evaluate(_call("workflow_draft"))).action == PolicyAction.DENY
+    assert (
+        await coding.evaluate(
+            _request("/workflow start " + json.dumps(coding.state["definition"]))
+        )
+    ).action == PolicyAction.DENY
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "retry_command", ["/workflow retry", "/workflow answer Retry with correct evidence"]
 )
