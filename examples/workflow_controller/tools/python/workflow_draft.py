@@ -16,6 +16,7 @@ def workflow_draft(
     branch: str = "",
     worker_defaults: dict[str, str] | None = None,
     stages: dict[str, dict[str, str]] | None = None,
+    repositories: list[dict] | None = None,
 ) -> str:
     """Validate a start message; never starts workers or modifies files.
 
@@ -28,8 +29,18 @@ def workflow_draft(
     publish: false unless the user explicitly authorizes commit, push and PR.
     worker_defaults: optional model and reasoning_effort for new workers.
     stages: optional overrides keyed by exact workflow stage name.
+    repositories: assignments {id, repository, baseline, base}; optional branch/workspace.
     Returns valid and command, or valid=false and an error to correct.
     """
     return draft_start_message(
-        workflow, repository, task, baseline, base, publish, branch, worker_defaults, stages
+        workflow,
+        repository,
+        task,
+        baseline,
+        base,
+        publish,
+        branch,
+        worker_defaults,
+        stages,
+        repositories,
     )

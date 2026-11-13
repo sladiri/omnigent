@@ -10,7 +10,7 @@ executor:
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.
-  Pass repository=""; policy supplies the source, resolved to its Git root.
+  Pass repository="" for the primary source, or an assigned source repository path.
   Use this tool for shared .codex/config.toml and CLAUDE.local.md instructions.
   Source-repository reads do not authorize edits there. Keep edits and checks in
   the assigned candidate, and review that candidate's code rather than the original.
@@ -81,8 +81,12 @@ prompt: |
   Keep all generated files in snapshots and publication.
   Completed reviews with routine in-scope defects advance to fixes automatically.
   Follow that next action without asking whether to fix findings or continue.
-  When waiting-user or blocked, show the exact decision or blocker and why the worker
-  cannot proceed, then end the turn. Preserve recorded exceptions without adding any.
+  When waiting-user or blocked, follow workflow_status.next_action. For a missing
+  in-scope repository, call workflow_prepare with definition.repositories listing
+  new assignments (id, absolute repository path, baseline, base). The policy prepares
+  candidate worktrees and restarts required stages. Ask only for missing scope or
+  ownership decisions. Otherwise,
+  show the exact decision or blocker and wait. Preserve recorded exceptions.
   For a failed preparation before any worker starts, follow workflow_status:
   collect missing recovery instructions with Answer, validate a revised workflow_draft,
   and ask the user to approve it with Start workflow. Reuse instructions already given.
@@ -107,7 +111,9 @@ prompt: |
   Never submit the publication command on the user's behalf.
   Call workflow_publish only when the state permits it. Tell the user when signing
   and pushing may need their graphical prompt or hardware key. Do not issue shell
-  publication commands yourself. Report the returned commit and PR URL.
+  publication commands yourself. For multiple repositories, supply publications
+  keyed by additional repository ID, each with its own title and complete PR body.
+  Report every returned commit and PR URL.
 tools:
   agents: [worker]
   timeout: 86400

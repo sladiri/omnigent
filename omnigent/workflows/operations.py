@@ -70,8 +70,38 @@ def _save(path: Path, value: dict[str, Any]) -> None:
     Path(handle.name).replace(path)
 
 
-def workflow_snapshot(workspace: str, baseline: str = "") -> str:
+def workflow_snapshot(
+    workspace: str, baseline: str = "", repositories: dict[str, Any] | None = None
+) -> str:
     """Hash tracked and nonignored untracked working files, including executable bits."""
+    if repositories:
+        snapshots = {"primary": json.loads(workflow_snapshot(workspace, baseline))}
+        for identifier, assignment in repositories.items():
+            snapshots[identifier] = json.loads(
+                workflow_snapshot(assignment["workspace"], assignment["baseline"])
+            )
+        revisions = {key: value["revision"] for key, value in snapshots.items()}
+        return json.dumps(
+            {
+                **{key: value for key, value in snapshots["primary"].items() if key != "files"},
+                "revision": hashlib.sha256(
+                    json.dumps(revisions, sort_keys=True).encode()
+                ).hexdigest(),
+                "revisions": revisions,
+                "branches": {key: value["branch"] for key, value in snapshots.items()},
+                "dirty": any(value["dirty"] for value in snapshots.values()),
+                "files": {
+                    f"{identifier}::{name}": digest
+                    for identifier, snapshot in snapshots.items()
+                    for name, digest in snapshot["files"].items()
+                },
+                "baseline_paths": [
+                    f"{identifier}::{name}"
+                    for identifier, snapshot in snapshots.items()
+                    for name in snapshot.get("baseline_paths", [])
+                ],
+            }
+        )
     root = _workspace(workspace)
     index = _git(root, "ls-files", "--stage")
     if index.startswith("160000 ") or "\n160000 " in index:
@@ -241,7 +271,103 @@ def workflow_review_checkout(repository: str, pull_request_url: str) -> str:
         )
 
 
+def validate_repositories(definition: dict[str, Any]) -> None:
+    """Validate explicit secondary repository assignments before preparation."""
+    repositories = definition.get("repositories", [])
+    if not isinstance(repositories, list):
+        raise ValueError("repositories must be a list of assignments")
+    ids, paths = {"primary"}, {str(Path(definition["repository"]))}
+    for repository in repositories:
+        if not isinstance(repository, dict) or set(repository) - {
+            "id",
+            "repository",
+            "baseline",
+            "base",
+            "branch",
+            "workspace",
+            "remote",
+        }:
+            raise ValueError("Invalid repository assignment fields")
+        for key in ("id", "repository", "baseline", "base"):
+            if not isinstance(repository.get(key), str) or not repository[key].strip():
+                raise ValueError(f"Repository assignment needs {key}")
+        identifier = repository["id"]
+        path = str(Path(repository["repository"]))
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", identifier) or identifier in ids:
+            raise ValueError("Repository IDs must be unique kebab-case; primary is reserved")
+        if not Path(path).is_absolute() or path in paths:
+            raise ValueError("Repositories need distinct absolute paths")
+        for key in ("branch", "workspace", "remote"):
+            if key in repository and (
+                not isinstance(repository[key], str) or not repository[key].strip()
+            ):
+                raise ValueError(f"Repository {key} must be a nonempty string")
+        if "workspace" in repository and not Path(repository["workspace"]).is_absolute():
+            raise ValueError("Repository workspace must be absolute")
+        if (
+            len(definition.get("candidates", [])) != 1
+            and {"branch", "workspace"} & repository.keys()
+        ):
+            raise ValueError("Explicit repository branch/workspace requires one candidate")
+        ids.add(identifier)
+        paths.add(path)
+
+
+def repository_definition(
+    definition: dict[str, Any], repository: dict[str, Any]
+) -> dict[str, Any]:
+    """Reuse single-repository preparation for each candidate's secondary checkout."""
+    return {
+        **{key: value for key, value in definition.items() if key != "repositories"},
+        **{
+            key: value
+            for key, value in repository.items()
+            if key not in {"id", "branch", "workspace"}
+        },
+        "candidates": [
+            {
+                **{
+                    key: value
+                    for key, value in candidate.items()
+                    if key not in {"branch", "workspace"}
+                },
+                **{key: repository[key] for key in ("branch", "workspace") if key in repository},
+            }
+            for candidate in definition["candidates"]
+        ],
+    }
+
+
 def workflow_prepare(definition: dict[str, Any]) -> str:
+    """Prepare each repository using the same candidate and ownership gates."""
+    validate_repositories(definition)
+    repositories = definition.get("repositories", [])
+    roots = [_workspace(item["repository"]) for item in [definition, *repositories]]
+    common_dirs = [
+        _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir") for root in roots
+    ]
+    if len(set(common_dirs)) != len(common_dirs):
+        raise ValueError("Repository assignments must belong to distinct Git repositories")
+    primary = _prepare_repository(
+        {key: value for key, value in definition.items() if key != "repositories"}
+    )
+    result = json.loads(primary)
+    for repository in repositories:
+        prepared = json.loads(_prepare_repository(repository_definition(definition, repository)))
+        for candidate in result["candidates"]:
+            assigned = next(
+                item for item in prepared["candidates"] if item["id"] == candidate["id"]
+            )
+            candidate.setdefault("repositories", {})[repository["id"]] = {
+                **repository,
+                **assigned,
+                "id": repository["id"],
+                "pr_template": prepared.get("pr_template", ""),
+            }
+    return json.dumps(result)
+
+
+def _prepare_repository(definition: dict[str, Any]) -> str:
     """Prepare isolated implementations or bind Review to the existing worktree."""
     repository = _workspace(definition["repository"])
     run_id = definition["run_id"]
@@ -413,9 +539,46 @@ def validate_publication_text(title: str, body: str, template: str) -> None:
 
 
 def workflow_publish(
-    workspace: str, revision: str, title: str, body: str, base: str, remote: str = "origin"
+    workspace: str,
+    revision: str,
+    title: str,
+    body: str,
+    base: str,
+    remote: str = "origin",
+    repositories: dict[str, Any] | None = None,
+    publications: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Publish the controller-selected reviewed tree, reconciling each external effect."""
+    if repositories:
+        snapshot = json.loads(workflow_snapshot(workspace, repositories=repositories))
+        if snapshot["revision"] != revision:
+            raise ValueError("Reviewed contents changed; rerun reviews and selection")
+        if not isinstance(publications, dict) or set(publications) != set(repositories):
+            raise ValueError("Publication needs title and body for each secondary repository")
+        for identifier, assignment in repositories.items():
+            validate_publication_text(
+                publications[identifier]["title"],
+                publications[identifier]["body"],
+                assignment.get("pr_template", ""),
+            )
+        primary = json.loads(
+            workflow_publish(
+                workspace, snapshot["revisions"]["primary"], title, body, base, remote
+            )
+        )
+        published = {}
+        for identifier, assignment in repositories.items():
+            published[identifier] = json.loads(
+                workflow_publish(
+                    assignment["workspace"],
+                    snapshot["revisions"][identifier],
+                    title=publications[identifier]["title"],
+                    body=publications[identifier]["body"],
+                    base=assignment["base"],
+                    remote=assignment.get("remote", remote),
+                )
+            )
+        return json.dumps({**primary, "repositories": published})
     root = _workspace(workspace)
     template = root / ".github/pull_request_template.md"
     validate_publication_text(title, body, template.read_text() if template.is_file() else "")
