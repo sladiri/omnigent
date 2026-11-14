@@ -1797,7 +1797,14 @@ def _coding_controller(
                 ):
                     return _deny("Draft must use the workflow selected by the button")
                 try:
-                    resolved = _execution_settings(args, **execution)
+                    resolved = _execution_settings(
+                        {
+                            key: args[key]
+                            for key in ("worker_defaults", "stages")
+                            if args.get(key) is not None
+                        },
+                        **execution,
+                    )
                 except (ValueError, TypeError) as exc:
                     return _deny(str(exc))
                 if not any(resolved.values()):
