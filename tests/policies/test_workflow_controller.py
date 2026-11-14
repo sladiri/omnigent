@@ -878,7 +878,18 @@ async def test_review_button_binds_review_only_and_requires_one_candidate(coding
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workflow", ["implement-review-fix", "compare-review-fix", "review-fix"])
-async def test_idle_controller_drafts_valid_start_without_advancing(coding, workflow):
+@pytest.mark.parametrize(
+    "optional_args",
+    [
+        {},
+        {"worker_defaults": None},
+        {"stages": None},
+        {"worker_defaults": None, "stages": None, "repositories": None},
+    ],
+)
+async def test_idle_controller_drafts_valid_start_without_advancing(
+    coding, workflow, optional_args
+):
     from omnigent.workflows.controller import draft_start_message
 
     await coding.evaluate(
@@ -893,14 +904,16 @@ async def test_idle_controller_drafts_valid_start_without_advancing(coding, work
         "baseline": "main",
         "base": "main",
         "publish": False,
+        **optional_args,
     }
     call = EvaluationContext(
         phase=Phase.TOOL_CALL,
         tool_name="workflow_draft",
         content={"name": "workflow_draft", "arguments": args},
     )
-    assert (await coding.evaluate(call)).action == PolicyAction.ALLOW
-    draft = json.loads(draft_start_message(**args))
+    result = await coding.evaluate(call)
+    assert result.action == PolicyAction.ALLOW, result.reason
+    draft = json.loads(draft_start_message(**(result.data or args)))
     assert draft["valid"] is True
     await coding.evaluate(output("workflow_draft", draft))
     assert coding.state["status"] == "idle"
