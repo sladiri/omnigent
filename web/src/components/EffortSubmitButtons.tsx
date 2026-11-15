@@ -26,7 +26,7 @@ export function EffortSubmitButtons({
             title={`Send with ${level} effort`}
             onClick={() => onSubmit(level)}
           >
-            {level === "xhigh" ? "X-high" : level.charAt(0).toUpperCase() + level.slice(1)}
+            {level === "xhigh" ? "xH" : level.charAt(0).toUpperCase()}
           </Button>
         ))}
     </div>
