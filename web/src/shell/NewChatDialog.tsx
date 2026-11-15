@@ -6798,6 +6798,20 @@ export function NewChatLandingScreen() {
                     >
                       focus
                     </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 px-2 text-xs md:h-8"
+                      title="simple"
+                      disabled={creating}
+                      onClick={() => {
+                        setMessage(`Describe in plain English.\n\n${message}`);
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      simple
+                    </Button>
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>

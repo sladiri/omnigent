@@ -10,6 +10,8 @@ and steers messages while the agent is busy.
 
 ## Sub-features
 
+- `simple-prompt`: Simple follows Focus and prepends "Describe in plain English."
+  without sending, in either composer. Check empty and existing drafts.
 - `focus-prompt`: Focus prepends the tight feedback loop instructions to an
   empty or existing draft without sending, in either composer.
 - `pill-tooltip`: hovering the pill shows one tooltip with Harness, Model, and

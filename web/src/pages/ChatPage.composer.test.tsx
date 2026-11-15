@@ -6055,3 +6055,27 @@ describe("focus prompt button", () => {
     },
   );
 });
+
+describe("simple prompt button", () => {
+  beforeEach(() => {
+    clearSessionDrafts();
+    setComposerState({ conversationId: "simple-prompt" });
+  });
+  afterEach(() => {
+    cleanup();
+    clearSessionDrafts();
+  });
+
+  it.each(["", "Implement the requested change."])(
+    "prepends simple text to %j without sending",
+    (draft) => {
+      const props = composerProps();
+      renderWithTooltips(<Composer {...props} />);
+      fireEvent.change(textarea(), { target: { value: draft } });
+      fireEvent.click(screen.getByRole("button", { name: "simple" }));
+      expect(textarea()).toHaveValue(`Describe in plain English.\n\n${draft}`);
+      expect(props.onSend).not.toHaveBeenCalled();
+      expect(textarea()).toHaveFocus();
+    },
+  );
+});

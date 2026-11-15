@@ -4040,6 +4040,26 @@ function ComposerImpl(
               >
                 focus
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-2 text-xs md:h-8"
+                title="simple"
+                disabled={disabled || isReadOnly || hasPendingElicitation || composerLockedByBtw}
+                onClick={() => {
+                  editText(
+                    draft.quotes[0]?.id ?? null,
+                    (text) => `Describe in plain English.\n\n${text}`,
+                  );
+                  dirtyRef.current = true;
+                  resetCursor();
+                  if (commandError !== null) setCommandError(null);
+                  textareaRef.current?.focus();
+                }}
+              >
+                simple
+              </Button>
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
