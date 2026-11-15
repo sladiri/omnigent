@@ -66,7 +66,6 @@ def test_braces_require_word_boundaries(command: str, expected: list[str]) -> No
         ("echo \\\n# status\necho done", ["echo done"]),
         ("echo \\\nready", []),
         ("cat <<DATA\ntoday's status\nDATA\necho done", ["echo done"]),
-        ("cat <<'DATA'\nplain text\nDATA", []),
         ("cat <<-DATA\n\tplain text\n\tDATA", []),
         ("cat <<<text", []),
         ("echo $(echo one)", []),
@@ -100,7 +99,6 @@ def test_unsupported_shell_syntax_requires_approval(
         ('echo $"one;two"; echo next', ["echo next"]),
         ("echo \\\nready; echo next", ["echo next"]),
         ("cat <<<text; echo next", ["echo next"]),
-        ("cat <<'DATA'; echo same\nquoted ) body\nDATA\necho next", ["echo same", "echo next"]),
         ("cat <<-DATA\n\tplain text\n\tDATA\necho next", ["echo next"]),
         ("cat <<ONE <<TWO\nfirst\nONE\nsecond\nTWO\necho next", ["echo next"]),
         ("echo $(echo one", []),
@@ -144,3 +142,53 @@ def test_literal_substitution_delimiters_preserve_command_boundaries(
 ) -> None:
     first, last = f"echo '{opening}'", f"echo '{closing}'"
     assert split_command_segments(f"{first}; echo middle; {last}") == [first, "echo middle", last]
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("cat <<'DATA'\ncd /etc; $(git push) `text` ' \"\nDATA", ["cat"]),
+        ('cat <<"DATA"\n{}\nDATA\necho next', ["cat", "echo next"]),
+        ("cat <<-'DATA'\n\t{}\n\tDATA", ["cat"]),
+        ("cat <<'ONE' <<'TWO'\nfirst\nONE\nsecond\nTWO", ["cat"]),
+        (
+            "cat <<'DATA'; echo same\nquoted ) body\nDATA\necho next",
+            ["cat", "echo same", "echo next"],
+        ),
+        ("3<<'DATA' cat\n{}\nDATA", ["cat"]),
+        ("cat 0<<'DATA' | cat\n{}\nDATA", ["cat", "cat"]),
+        ("cat <<'DATA' > output\n{}\nDATA", ["cat   > output"]),
+        ("<<'DATA' git push\n{}\nDATA", ["git push"]),
+        ("cat <<''\n{}\n\n", ["cat"]),
+        (
+            "cat <<'JSON' | python3 -c 'import json,sys; print(json.load(sys.stdin))'\n{}\nJSON",
+            ["cat", "python3 -c 'import json,sys; print(json.load(sys.stdin))'"],
+        ),
+    ],
+)
+def test_quoted_heredoc_data_preserves_commands(command: str, expected: list[str]) -> None:
+    assert split_command_segments(command) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'DATA'",
+        "cat <<'DATA'\nunterminated",
+        "cat <<'DATA' <<OTHER\n{}\nDATA\n$(cd /etc)\nOTHER",
+        "bash <<'DATA'\ncd /etc\nDATA",
+        "python3 <<'DATA'\nimport os; os.chdir('/etc')\nDATA",
+        "cat <<'DATA' | sh\ncd /etc\nDATA",
+        "cat <<'DATA' | /usr/bin/env python3\nprint('hello')\nDATA",
+        "<<'DATA' eval source /dev/stdin\ncd /etc\nDATA",
+        "source /dev/stdin <<'DATA'\ncd /etc\nDATA",
+        "/usr/bin/env -S 'python3' <<'DATA'\nprint('hello')\nDATA",
+        "cat <<'DATA' | /usr/bin/env -S 'sh'\ncd /etc\nDATA",
+        "/usr/bin/python3.12 <<'DATA'\nprint('hello')\nDATA",
+        "node <<'DATA'\nprocess.chdir('/etc')\nDATA",
+        "\"$EXECUTOR\" <<'DATA'\ncd /etc\nDATA",
+    ],
+)
+def test_executable_or_incomplete_heredocs_require_approval(command: str) -> None:
+    with pytest.raises(UnsupportedShellSyntax):
+        split_command_segments(command)
