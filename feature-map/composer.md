@@ -14,6 +14,8 @@ apply only to that side chat. See the [side-chat settings recipe](sessions.md).
 
 ## Sub-features
 
+- `focus-prompt`: Focus prepends the tight feedback loop instructions to an
+  empty or existing draft without sending, in either composer.
 - `prompt-link`: opening the new-session page with `?prompt=`
   fills an editable draft without starting a session. The consumed prompt is
   removed from the URL while other query parameters and the fragment remain.
@@ -288,6 +290,7 @@ apply only to that side chat. See the [side-chat settings recipe](sessions.md).
 
 **New-session composer** (landing page, or New session):
 
+- Click **focus** beside Start before sending the first message.
 - Select **Codex → + → Plan** and confirm the **Plan mode** badge before sending.
 - Write a prompt or attach a file before choosing a working directory. Hover
   or focus disabled Start to see what is missing; click, tap, or press Enter to
@@ -438,6 +441,11 @@ Other connection providers alone do not enable the managed MCP picker.
   covers the connected-host and managed-sandbox variants with stubbed host responses.
   Repeat at a phone viewport; desktop reconnect exceptions also have component
   coverage in `web/src/shell/NewChatDialog.test.tsx`.
+- **`focus-prompt`, both composers:** component tests in
+  `web/src/pages/ChatPage.composer.test.tsx` and
+  `web/src/shell/NewChatDialog.flow.test.tsx`. Manually click Focus with an empty
+  draft and with typed text; expect the prefix and no send. Start the session
+  and check that its first message contains the prefix and your text.
 - **`pill-tooltip`, `pill-tooltip-suppressed`, in-session:**
   `tests/browser_ui/chat/test_composer_tooltips.py::test_pill_uses_one_tooltip_and_suppresses_it_while_picker_is_open`
   (runs with zero and one turn).
