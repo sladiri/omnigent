@@ -6052,6 +6052,8 @@ describe("effort submit buttons", () => {
     const onSend = vi.fn();
     renderWithTooltips(<Composer {...composerProps({ onSend })} />);
     const button = screen.getByRole("button", { name: `Send with ${effort} effort` });
+    expect(button).toHaveTextContent(effort === "xhigh" ? "xH" : effort[0].toUpperCase());
+    expect(button).toHaveAttribute("title", `Send with ${effort} effort`);
     expect(button).toBeDisabled();
     fireEvent.change(textarea(), { target: { value: "hello" } });
     fireEvent.click(button);
@@ -6077,5 +6079,6 @@ describe("effort submit buttons", () => {
     renderWithTooltips(<Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />);
     expect(screen.queryByRole("button", { name: "Send with low effort" })).toBeNull();
     expect(screen.getByRole("button", { name: "Send with high effort" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send with xhigh effort" })).toHaveTextContent("xH");
   });
 });
