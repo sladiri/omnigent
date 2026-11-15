@@ -312,6 +312,7 @@ def _split_unquoted_operators(command: str) -> list[str]:
     unsupported_reason: str | None = None
     unsupported_segment = False
     heredocs: list[tuple[str, bool]] = []
+    has_literal_heredoc = False
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
@@ -377,15 +378,19 @@ def _split_unquoted_operators(command: str) -> list[str]:
             i += 3
             continue
         elif command[i : i + 2] == "<<":
-            unsupported_reason = unsupported_reason or "Shell here-documents require approval"
             match = _HEREDOC_DELIMITER.match(command, i)
             if match is None:
-                raise UnsupportedShellSyntax(unsupported_reason, segments)
+                raise UnsupportedShellSyntax("Shell here-documents require approval", segments)
             delimiter = match.group("delimiter")
             if delimiter.startswith(("'", '"')):
                 delimiter = delimiter[1:-1]
+                has_literal_heredoc = True
+            else:
+                unsupported_reason = unsupported_reason or "Shell here-documents require approval"
+                unsupported_segment = True
             heredocs.append((delimiter, bool(match.group("tabs"))))
-            unsupported_segment = True
+            # Remove the redirection and any adjacent descriptor, preserving argv boundaries.
+            buf = [re.sub(r"(?<!\S)[0-9]+$", "", "".join(buf)), " "]
             at_word_start = False
             i = match.end()
             continue
@@ -426,8 +431,35 @@ def _split_unquoted_operators(command: str) -> list[str]:
         i += 1
     if not unsupported_segment:
         segments.append("".join(buf))
+    if heredocs:
+        unsupported_reason = unsupported_reason or "Shell here-documents require approval"
     if unsupported_reason:
         raise UnsupportedShellSyntax(unsupported_reason, segments)
+    if has_literal_heredoc:
+        for segment in segments:
+            try:
+                tokens = real_invocation_tokens(shlex.split(segment))
+            except ValueError as exc:
+                raise UnsupportedShellSyntax(
+                    "Unclassifiable here-document command requires approval", segments
+                ) from exc
+            # A consumer can execute stdin directly, including through a pipeline or wrapper.
+            head = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+            python_command = bool(re.fullmatch(r"python(?:[23](?:\.\d+)?)?", head))
+            # Python -c supplies its program in argv; stdin remains data for that program.
+            explicit_python_program = python_command and len(tokens) > 2 and tokens[1] == "-c"
+            if tokens and (
+                is_shell_interpreter(tokens)
+                or (spawns_gated_command_as_child(tokens) and not explicit_python_program)
+                or is_unresolved_invocation(tokens)
+                or unwrap_shell_command(tokens) is not None
+                or head in {"eval", "source", ".", "node", "nodejs", "php", "lua", "fish"}
+                or (python_command and not explicit_python_program)
+                or any(char in tokens[0] for char in "$`*?[]{}")
+            ):
+                raise UnsupportedShellSyntax(
+                    "Executable here-document input requires approval", segments
+                )
     return segments
 
 

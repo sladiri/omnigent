@@ -22,6 +22,7 @@ unlike the Google builtin — there is no session_state round-trip layer.
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 import pytest
@@ -47,6 +48,31 @@ from tests.policies.builtins.helpers import tool_call_event as tc
 _HANDLER = "omnigent.policies.builtins.github.github_policy"
 _REPO = "octo/hello"
 _REPO_URL = "https://github.com/octo/hello/pull/1"
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        ("cat", "ALLOW"),
+        ("git push https://github.com/octo/hello.git main", "DENY"),
+        ("cat; git push https://github.com/octo/hello.git main", "DENY"),
+        ("cat | sh", "ASK"),
+        ("python3", "ASK"),
+        ("cat | python3 -c 'import json,sys; print(json.load(sys.stdin))'", "ALLOW"),
+        ("python3 -c 'import os; os.system(\"git push\")'", "ASK"),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_quoted_heredoc_policy_checks_commands(header: str, expected: str, wrapped: bool) -> None:
+    command = f'{header} <<\'JSON\'\n{{"text": "git push $(text)"}}\nJSON'
+    if wrapped:
+        command = f"/usr/bin/bash -lc {shlex.quote(command)}"
+    assert _action(github_policy()(_sh(command))) == expected
+
+
+def test_git_push_after_quoted_heredoc_remains_gated() -> None:
+    command = "cat <<'JSON'\n{}\nJSON\ngit push https://github.com/octo/hello.git main"
+    assert _action(github_policy()(_sh(command))) == "DENY"
 
 
 def _sh(command: str, session_state: dict[str, Any] | None = None) -> PolicyEvent:

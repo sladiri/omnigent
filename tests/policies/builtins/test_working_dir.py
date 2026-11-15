@@ -24,6 +24,8 @@ session_state round-trip layer.
 
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from omnigent.policies.builtins._shell import SHELL_TOOLS
@@ -57,6 +59,33 @@ def _action(result: PolicyResponse | None) -> str:
     :returns: ``"ALLOW"`` for ``None``, else the result's ``"result"`` value.
     """
     return result["result"] if result else "ALLOW"
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        ("cat", "ALLOW"),
+        ("/opt/tools/log-search search app", "ALLOW"),
+        ("cat | cat", "ALLOW"),
+        ("cd /etc", "ASK"),
+        ("cat; cd /etc", "ASK"),
+        ("cat | bash", "ASK"),
+        ("python3", "ASK"),
+        ("cat | python3 -c 'import json,sys; print(json.load(sys.stdin))'", "ALLOW"),
+        ("python3 -c 'import os; os.chdir(\"/etc\")'", "ASK"),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_quoted_heredoc_policy_checks_commands(header: str, expected: str, wrapped: bool) -> None:
+    command = f'{header} <<\'JSON\'\n{{"query": "cd /etc; git push $(text)"}}\nJSON'
+    if wrapped:
+        command = f"/usr/bin/bash -lc {shlex.quote(command)}"
+    assert _action(block_working_dir_changes(action="ask")(_sh(command))) == expected
+
+
+def test_directory_change_after_quoted_heredoc_remains_gated() -> None:
+    command = "cat <<'JSON'\n{}\nJSON\ncd /etc"
+    assert _action(block_working_dir_changes(action="ask")(_sh(command))) == "ASK"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
