@@ -14,6 +14,8 @@ apply only to that side chat. See the [side-chat settings recipe](sessions.md).
 
 ## Sub-features
 
+- `simple-prompt`: Simple follows Focus and prepends "Describe in plain English."
+  without sending, in either composer. Check empty and existing drafts.
 - `focus-prompt`: Focus prepends the tight feedback loop instructions to an
   empty or existing draft without sending, in either composer.
 - `prompt-link`: opening the new-session page with `?prompt=`

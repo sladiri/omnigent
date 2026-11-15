@@ -4478,6 +4478,24 @@ function ComposerImpl(
                 <TextQuoteIcon className="size-4" aria-hidden="true" />
                 focus
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-2 text-xs md:h-8"
+                title="simple"
+                disabled={
+                  disabled ||
+                  isReadOnly ||
+                  hasPendingElicitation ||
+                  composerLockedByBtw ||
+                  savingSubmitEffort
+                }
+                onClick={() => insertPrompt("Describe in plain English.")}
+              >
+                <TextQuoteIcon className="size-4" aria-hidden="true" />
+                simple
+              </Button>
               {showEffort &&
                 !showInterruptButton &&
                 !(costRoutingEligible && submitRoutingMode === "on") && (

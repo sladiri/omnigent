@@ -7417,6 +7417,21 @@ export function NewChatLandingScreen() {
                       <TextQuoteIcon className="size-4" aria-hidden="true" />
                       focus
                     </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 px-2 text-xs md:h-8"
+                      title="simple"
+                      disabled={creating}
+                      onClick={() => {
+                        setMessage(`Describe in plain English.\n\n${message}`);
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      <TextQuoteIcon className="size-4" aria-hidden="true" />
+                      simple
+                    </Button>
 
                     {!smartRoutingHarnessSelected &&
                       !(smartRoutingEligible && costControlMode === "on") &&

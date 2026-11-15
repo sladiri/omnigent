@@ -485,6 +485,37 @@ describe("NewChatLandingScreen create flow", () => {
     },
   );
 
+  it.each(["", "Implement the requested change."])(
+    "prepends simple text to the initial message %j without starting a session",
+    async (draft) => {
+      vi.mocked(authenticatedFetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "conv_new" }),
+      } as Response);
+      renderLanding();
+      await waitForWorkspaceSeed();
+      typeMessage(draft);
+
+      fireEvent.click(screen.getByRole("button", { name: "simple" }));
+
+      const expected = `Describe in plain English.\n\n${draft}`;
+      expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(expected);
+      expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
+      expect(authenticatedFetch).not.toHaveBeenCalled();
+      expect(beginLocalConversationMock).not.toHaveBeenCalled();
+      expect(navigateMock).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
+      expect(screen.getByRole("button", { name: "simple" })).toBeDisabled();
+      await waitFor(() =>
+        expect(setPendingInitialPromptMock).toHaveBeenCalledWith(
+          "conv_new",
+          expect.objectContaining({ text: expected.trim() }),
+        ),
+      );
+    },
+  );
+
   it.each([
     { query: "canvas=main", canvasId: "main", project: undefined },
     {
