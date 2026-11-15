@@ -60,10 +60,6 @@ os_env:
       - ~/.agents/skills/wayfinder
       - ~/.agents/skills/wizard
       - ~/.agents/skills/writing-for-agents
-      - ~/.claude/skills/code-review
-      - ~/.claude/skills/compare-solutions
-      - ~/.claude/skills/ponytail
-      - ~/.claude/skills/ponytail-review
       - ~/.claude/skills/skill-add-tests-before-plan-implementation
       - ~/.claude/skills/skill-cleanup-feature-worktrees
       - ~/.claude/skills/skill-create-agent-rules
@@ -78,10 +74,6 @@ os_env:
       - ~/.codex/skills/.system/review-agent
       - ~/.codex/skills/.system/skill-creator
       - ~/.codex/skills/.system/skill-installer
-      - ~/.codex/skills/code-review
-      - ~/.codex/skills/compare-solutions
-      - ~/.codex/skills/ponytail
-      - ~/.codex/skills/ponytail-review
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.

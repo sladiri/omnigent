@@ -79,6 +79,9 @@ async def test_worker_reads_symlinked_skills_without_write_or_sibling_access(
         (installs / name).parent.mkdir(parents=True, exist_ok=True)
         (installs / name).symlink_to(installed, target_is_directory=True)
         pending["stage"] = stage
+        if installation != ".agents" and name != extra[installation]:
+            assert "no sandbox read grant" in await read(installs / name / "SKILL.md")
+            continue
         for path in [skill, installs / name / "SKILL.md", reference]:
             assert permitted("sys_os_read", path) == "ALLOW"
             result = await read(path)
