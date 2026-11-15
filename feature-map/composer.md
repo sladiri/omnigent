@@ -10,6 +10,8 @@ and steers messages while the agent is busy.
 
 ## Sub-features
 
+- `focus-prompt`: Focus prepends the tight feedback loop instructions to an
+  empty or existing draft without sending, in either composer.
 - `pill-tooltip`: hovering the pill shows one tooltip with Harness, Model, and
   Connection rows (plus effort when the harness has it).
 - `pill-tooltip-suppressed`: the tooltip stays hidden while the model picker is
@@ -71,6 +73,7 @@ and steers messages while the agent is busy.
 
 **New-session composer** (landing page, or New session):
 
+- Click **focus** beside Start before sending the first message.
 - From any page, press ⌘/Ctrl+Alt+N to open and focus a clean new-session
   composer.
 - Hover the model/effort pill to see the tooltip.
@@ -99,6 +102,11 @@ verify-env run -- python -m pytest <test> --ui-skip-build --video=on \
 Tests under `tests/browser_ui/` stub every backend call and need no instance:
 `uv run pytest <test> --browser-ui-skip-build --video=on --output="$VERIFY_EVIDENCE/composer"`.
 
+- **`focus-prompt`, both composers:** component tests in
+  `web/src/pages/ChatPage.composer.test.tsx` and
+  `web/src/shell/NewChatDialog.flow.test.tsx`. Manually click Focus with an empty
+  draft and with typed text; expect the prefix and no send. Start the session
+  and check that its first message contains the prefix and your text.
 - **`pill-tooltip`, `pill-tooltip-suppressed`, in-session:**
   `tests/browser_ui/chat/test_composer_tooltips.py::test_pill_uses_one_tooltip_and_suppresses_it_while_picker_is_open`
   (runs with zero and one turn).

@@ -6782,6 +6782,22 @@ export function NewChatLandingScreen() {
                       onTranscript={dictation.appendFinal}
                       onInterim={dictation.replaceInterim}
                     />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 px-2 text-xs md:h-8"
+                      title="focus"
+                      disabled={creating}
+                      onClick={() => {
+                        setMessage(
+                          `We're in a "tight feedback loop" mode. Your task is to implement the smallest solution possible. No extras - no tests, no verification loops, no documentation. This will be done in other sessions.\n\n${message}`,
+                        );
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      focus
+                    </Button>
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
