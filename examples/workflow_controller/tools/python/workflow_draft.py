@@ -17,6 +17,7 @@ def workflow_draft(
     worker_defaults: dict[str, str] | None = None,
     stages: dict[str, dict[str, str]] | None = None,
     repositories: list[dict] | None = None,
+    evidence_files: list[str] | None = None,
 ) -> str:
     """Validate a start message; never starts workers or modifies files.
 
@@ -30,6 +31,7 @@ def workflow_draft(
     worker_defaults: optional model and reasoning_effort for new workers.
     stages: optional overrides keyed by exact workflow stage name.
     repositories: assignments {id, repository, baseline, base}; optional branch/workspace.
+    evidence_files: absolute paths to external files needed by the task; read-only.
     Returns valid and command, or valid=false and an error to correct.
     """
     return draft_start_message(
@@ -43,4 +45,5 @@ def workflow_draft(
         worker_defaults,
         stages,
         repositories,
+        evidence_files,
     )

@@ -24,10 +24,10 @@ from tests.e2e.test_workflow_controller_e2e import (
 from tests.tools.test_workflow_operations import repository as repository
 
 
-@pytest.mark.parametrize("review_existing", [False, True])
+@pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix", "compare-review-fix"])
 @pytest.mark.timeout(150)
 def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
-    repository, isolated_mock_llm_server_url, tmp_path, review_existing
+    repository, isolated_mock_llm_server_url, tmp_path, workflow
 ):
     mock_url = isolated_mock_llm_server_url
     model = "mock-repository-controller"
@@ -36,12 +36,16 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
     (repository / ".codex").mkdir()
     (repository / ".codex/config.toml").write_text('developer_instructions = "Shared guidance"')
     (repository / "CLAUDE.local.md").write_text("Original checkout instructions")
+    evidence = tmp_path / "support-report.md"
+    evidence.write_text("Required external evidence")
     source = repository
-    stage = "implement"
-    if review_existing:
+    stage = "current/implement"
+    if workflow == "review-fix":
         source = tmp_path / "candidate"
         _git(repository, "worktree", "add", "-b", "candidate", str(source))
-        stage = "review-a"
+        stage = "current/review-a"
+    elif workflow == "compare-review-fix":
+        stage = "explore"
     with server_runner(
         tmp_path / "stack", server_cwd=Path(__file__).resolve().parents[2]
     ) as stack:
@@ -57,21 +61,26 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
             sid = create_runner_bound_session(client, agent_name=name, runner_id=stack.runner_id)
             configure_mock_llm(
                 mock_url,
-                [
-                    _tool("workflow_prepare", "prepare", {"definition": {}}),
-                    _tool("workflow_snapshot", "snapshot", {"workspace": str(repository)}),
-                    {"text": "WORKER_READY"},
-                ],
+                (
+                    []
+                    if stage == "explore"
+                    else [
+                        _tool("workflow_prepare", "prepare", {"definition": {}}),
+                        _tool("workflow_snapshot", "snapshot", {"workspace": str(repository)}),
+                    ]
+                )
+                + [{"text": "WORKER_READY"}],
                 key=model,
             )
             definition = {
-                "workflow": "review-fix" if review_existing else "implement-review-fix",
+                "workflow": workflow,
                 "repository": str(source),
                 "task": "Check the greeting after reading source instructions.",
                 "baseline": "HEAD",
                 "base": "main",
                 "candidates": [{"id": "current", "task": "Read source context for the greeting."}],
                 "publish": False,
+                "evidence_files": [str(evidence)],
                 "worktree_setup": False,
             }
             send_user_message_to_session(
@@ -87,17 +96,22 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
                     _tool(
                         "workflow_read",
                         "instructions",
-                        {"repository": "/wrong", "path": str(repository / ".codex/config.toml")},
+                        {"repository": "", "path": str(repository / ".codex/config.toml")},
                     ),
                     _tool(
                         "workflow_read",
                         "shared",
-                        {"repository": "/wrong", "path": str(repository / "CLAUDE.local.md")},
+                        {"repository": "", "path": str(repository / "CLAUDE.local.md")},
+                    ),
+                    _tool(
+                        "workflow_read",
+                        "evidence",
+                        {"repository": "", "path": str(evidence)},
                     ),
                     {
                         "text": json.dumps(
                             {
-                                "stage": "current/" + stage,
+                                "stage": stage,
                                 "outcome": "NEEDS_INPUT",
                                 "evidence": "Read shared source instructions; decision needed.",
                                 "question": question,
@@ -106,7 +120,9 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
                         "block": True,
                     },
                 ],
-                key="mock-repository-worker",
+                key="mock-repository-worker-implementation"
+                if stage == "current/implement"
+                else "mock-repository-worker",
             )
             configure_mock_llm(
                 mock_url,
@@ -130,6 +146,7 @@ def test_worker_reads_original_checkout_and_keeps_wait_after_restart(
             child_items = client.get(f"/v1/sessions/{child_id}/items").json()["data"]
             assert "Shared guidance" in _status(child_items, "instructions")["content"]
             assert "Original checkout instructions" in _status(child_items, "shared")["content"]
+            assert "Required external evidence" in _status(child_items, "evidence")["content"]
             assert _status(child_items, "instructions")["repository"] == str(source)
             assert (repository / "CLAUDE.local.md").read_text() == "Original checkout instructions"
             preview = client.get(f"/v1/sessions/{sid}/workflow-draft").json()
