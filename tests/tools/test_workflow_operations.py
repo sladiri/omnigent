@@ -342,6 +342,13 @@ def test_publish_reconciles_commit_push_and_created_pr_after_lost_response(
                 if published["pr"]
                 else []
             )
+        if args[:3] == ("gh", "pr", "view"):
+            return json.dumps(
+                {
+                    "state": published["state"],
+                    "headRefOid": original(path, "git", "rev-parse", "HEAD"),
+                }
+            )
         if args[:3] == ("gh", "pr", "create"):
             assert args[args.index("--repo") + 1] == "example/test"
             assert Path(args[-1]).read_text() == "Reviewed change and test evidence"
@@ -387,6 +394,149 @@ def test_publish_reconciles_commit_push_and_created_pr_after_lost_response(
     (workspace / "hello.txt").write_text("unreviewed change")
     with pytest.raises(ValueError, match="Reviewed contents changed"):
         operations.workflow_publish(*params)
+
+
+@pytest.fixture
+def publication(repository, tmp_path, monkeypatch):
+    prepared = json.loads(operations.workflow_prepare(_definition(repository)))
+    workspace = Path(prepared["candidates"][0]["workspace"])
+    branch = prepared["candidates"][0]["branch"]
+    bare = tmp_path / "remote.git"
+    operations._git(repository, "clone", "--bare", str(repository), str(bare))
+    url = "git@github.com:example/test.git"
+    operations._git(workspace, "remote", "add", "origin", url)
+    original = operations._run
+    github = {"exists": False, "state": "OPEN", "pushes": 0, "creates": 0}
+    pr_url = "https://github.com/example/test/pull/1"
+
+    def head():
+        return operations._git(bare, "rev-parse", f"refs/heads/{branch}")
+
+    def run(path, *args, env=None):
+        if args[:3] == ("git", "--no-pager", "commit") and "-S" in args:
+            return original(path, "git", "-c", "commit.gpgsign=false", "commit", "-m", args[-1])
+        if args[:3] == ("git", "--no-pager", "verify-commit"):
+            return ""
+        if args[:3] == ("git", "--no-pager", "push"):
+            result = original(path, "git", "-c", f"url.{bare}.insteadOf={url}", *args[2:])
+            github["pushes"] += 1
+            if github.pop("lose_push_response", False):
+                raise RuntimeError("lost response after push")
+            return result
+        if args[:2] == ("gh", "api"):
+            ref = {"ref": f"refs/heads/{branch}", "object": {"sha": head()}}
+            return json.dumps([ref] if "matching-refs" in args[2] else ref)
+        if args[:3] in (("gh", "pr", "list"), ("gh", "pr", "view")):
+            pr = {
+                "url": pr_url,
+                "headRefOid": github.get("pr_head", head()),
+                "state": github["state"],
+            }
+            if args[2] == "view":
+                return json.dumps(pr)
+            return json.dumps([pr] if github["exists"] else [])
+        if args[:3] == ("gh", "pr", "create"):
+            github["exists"] = True
+            github["creates"] += 1
+            return pr_url
+        return original(path, *args, env=env)
+
+    monkeypatch.setattr(operations, "_run", run)
+    monkeypatch.setattr(operations, "_desktop_environment", lambda _: {"DISPLAY": ":test"})
+    operations._git(workspace, "push", "origin", f"HEAD:refs/heads/{branch}")
+    github["pushes"] = 0
+    return workspace, github
+
+
+def _publish_change(workspace, title="TEST-1 fix: follow up"):
+    return json.loads(
+        operations.workflow_publish(
+            str(workspace), _snapshot(workspace)["revision"], title, "Test evidence", "main"
+        )
+    )
+
+
+@pytest.mark.parametrize("prior_publication", [False, True])
+@pytest.mark.parametrize("lose_push_response", [False, True])
+def test_publish_updates_existing_pr_in_reused_worktree(
+    publication, prior_publication, lose_push_response
+):
+    workspace, github = publication
+    record = Path(operations._git(workspace, "rev-parse", "--absolute-git-dir"))
+    if prior_publication:
+        (workspace / "hello.txt").write_text("first publication\n")
+        first = _publish_change(workspace, "TEST-1 feat: initial change")
+        previous = json.loads((record / "omnigent-publication.json").read_text())
+    else:
+        github["exists"] = True
+    initial_head = _snapshot(workspace)["head"]
+    (workspace / "hello.txt").write_text("follow-up publication\n")
+    revision = _snapshot(workspace)["revision"]
+    github["lose_push_response"] = lose_push_response
+    if lose_push_response:
+        with pytest.raises(RuntimeError, match="lost response after push"):
+            _publish_change(workspace)
+    result = _publish_change(workspace)
+    assert result == _publish_change(workspace)
+    assert result["pr_url"] == "https://github.com/example/test/pull/1"
+    assert operations._git(workspace, "rev-parse", "HEAD^") == initial_head
+    assert _snapshot(workspace)["revision"] == revision
+    assert not _snapshot(workspace)["dirty"]
+    assert github["pushes"] == 1 + prior_publication
+    assert github["creates"] == int(prior_publication)
+    if prior_publication:
+        archive = record / f"omnigent-publication.completed-{first['commit']}.json"
+        assert json.loads(archive.read_text()) == previous
+
+
+@pytest.mark.parametrize("changed", ["unfinished", "head", "remote"])
+def test_publish_preserves_record_when_follow_up_is_not_safe(publication, changed):
+    workspace, github = publication
+    (workspace / "hello.txt").write_text("first publication\n")
+    _publish_change(workspace)
+    record = Path(operations._git(workspace, "rev-parse", "--absolute-git-dir"))
+    path = record / "omnigent-publication.json"
+    if changed == "unfinished":
+        state = json.loads(path.read_text())
+        del state["pr_url"]
+        operations._save(path, state)
+    elif changed == "head":
+        operations._git(workspace, "commit", "--allow-empty", "--no-gpg-sign", "-m", "other")
+    else:
+        operations._git(
+            workspace, "remote", "set-url", "origin", "git@github.com:another/test.git"
+        )
+    before = path.read_text()
+    (workspace / "hello.txt").write_text("follow-up publication\n")
+    with pytest.raises(ValueError, match="Publication parameters changed"):
+        _publish_change(workspace)
+    assert path.read_text() == before
+    assert not list(record.glob("omnigent-publication.completed-*.json"))
+    assert github["pushes"] == 1
+
+
+@pytest.mark.parametrize("pr_state", ["CLOSED", "MERGED", "diverged", "stale"])
+def test_publish_rejects_unsafe_or_unconfirmed_pr_update(publication, pr_state):
+    workspace, github = publication
+    github["exists"] = True
+    initial_head = _snapshot(workspace)["head"]
+    if pr_state in {"CLOSED", "MERGED"}:
+        github["state"] = pr_state
+    elif pr_state == "stale":
+        github["pr_head"] = initial_head
+    else:
+        operations._git(workspace, "commit", "--allow-empty", "--no-gpg-sign", "-m", "other")
+        github["pr_head"] = _snapshot(workspace)["head"]
+        operations._git(workspace, "reset", "--hard", initial_head)
+    (workspace / "hello.txt").write_text("follow-up publication\n")
+    with pytest.raises(ValueError, match=r"Existing PR|PR was closed"):
+        _publish_change(workspace)
+    assert github["pushes"] == int(pr_state == "stale")
+    assert github["creates"] == 0
+    if pr_state == "stale":
+        del github["pr_head"]
+        _publish_change(workspace)
+        assert github["pushes"] == 1
 
 
 def test_publish_refuses_multiple_push_destinations(repository: Path) -> None:
