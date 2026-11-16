@@ -14,6 +14,7 @@ interface PreparedDraft {
   base: string;
   branch: string | null;
   publish: boolean;
+  evidence_files?: string[];
 }
 
 export function WorkflowStartButton({
@@ -71,6 +72,12 @@ export function WorkflowStartButton({
           {draft.publish ? "enabled" : "disabled"}
         </p>
         <p className="whitespace-pre-wrap">{draft.task}</p>
+        {!!draft.evidence_files?.length && (
+          <p className="whitespace-pre-wrap">
+            Read-only evidence files:{"\n"}
+            {draft.evidence_files.join("\n")}
+          </p>
+        )}
       </details>
       <Button
         type="button"

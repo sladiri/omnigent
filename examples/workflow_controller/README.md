@@ -36,8 +36,13 @@ with `workflow_read`. The controller supplies the source path; the tool resolves
 session subfolders to the Git root. Absolute paths and paths relative to that
 root are accepted. When the source is a linked worktree, absolute paths into
 Git's main checkout are also readable. This includes shared local instructions
-and other monorepo services. Other linked worktrees and paths outside both
-roots remain blocked, including symlink and traversal escapes. Source
+and other monorepo services. External evidence files named in the task belong in
+`workflow_draft.evidence_files`. Drafting validates and resolves those files, and
+the prepared workflow lists them before Start. Active workers can read these
+exact files with `workflow_read` or native file-read tools in all three workflows.
+They cannot add files to the approved list or write to external evidence. Evidence
+stays outside candidates and publication. Other linked worktrees and paths outside
+the source roots and approved files remain blocked, including symlink and traversal escapes. Source
 writes and commands remain restricted to the assigned candidate. Paused or
 inactive workers cannot use this read access. Reads do not advance any gate.
 

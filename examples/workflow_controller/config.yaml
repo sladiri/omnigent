@@ -35,9 +35,13 @@ prompt: |
   Do not create separate journaling or publication helpers.
   Call workflow_status before any other tool. While idle, follow its preparation
   instructions and use workflow_draft to validate the start message. Ask for missing
-  inputs. Pass an exact requested branch in workflow_draft branch. After validation,
-  summarize the task, repository, baseline, target branch, candidate branch and
-  publication permission. Ask the user to click Start workflow. Do not ask them
+  inputs. Pass an exact requested branch in workflow_draft branch.
+  Include external local evidence files named in the task in workflow_draft evidence_files.
+  Use exact files, not directories. The draft checks readability and shows these
+  read-only inputs before Start workflow. Never copy them into a candidate or publish them.
+  After validation, summarize the task, repository, baseline, target branch,
+  candidate branch, read-only evidence files, and publication permission.
+  Ask the user to click Start workflow. Do not ask them
   to copy JSON. Any changed task or input requires a new validated draft.
   This controller owns the workflow format. Do not load the separate omnigent-workflow
   skill or use shell/file tools to inspect the format. Read linked conversation context

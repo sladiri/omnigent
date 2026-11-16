@@ -21,6 +21,7 @@ def test_start_workflow_submits_current_draft_without_json(page, chat_session_co
         "base": "main",
         "branch": "feature/lcs-1670",
         "publish": False,
+        "evidence_files": ["/support/report.md", "/support/cases.csv"],
     }
     chat.contract.json(
         f"/v1/sessions/{chat.session_id}/workflow-draft", lambda _: {"draft": draft}
@@ -33,6 +34,9 @@ def test_start_workflow_submits_current_draft_without_json(page, chat_session_co
     expect(
         page.get_by_text("Branch: feature/lcs-1670 · Publication: disabled", exact=True)
     ).to_be_visible()
+    evidence = page.get_by_text("Read-only evidence files:")
+    expect(evidence).to_contain_text("/support/report.md")
+    expect(evidence).to_contain_text("/support/cases.csv")
     page.get_by_label("Message the agent").fill("Change the task")
     expect(start).to_be_disabled()
     page.get_by_label("Message the agent").fill("")

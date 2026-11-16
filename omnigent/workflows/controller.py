@@ -329,6 +329,12 @@ def _definition(
             raise ValueError(f"Definition needs {key}")
     if not Path(definition["repository"]).is_absolute():
         raise ValueError("Repository must be an absolute path")
+    evidence_files = definition.setdefault("evidence_files", [])
+    if not isinstance(evidence_files, list) or any(
+        not isinstance(path, str) or "\x00" in path or not Path(path).is_absolute()
+        for path in evidence_files
+    ):
+        raise ValueError("evidence_files must be a list of absolute file paths")
     candidates = definition.get("candidates", [])
     workflow = definition.setdefault(
         "workflow",
@@ -375,6 +381,7 @@ def draft_start_message(
     worker_defaults: dict[str, str] | None = None,
     stages: dict[str, dict[str, str]] | None = None,
     repositories: list[Json] | None = None,
+    evidence_files: list[str] | None = None,
 ) -> str:
     """Validate a proposed start command without starting work or changing state."""
     try:
@@ -389,6 +396,7 @@ def draft_start_message(
                     "baseline": baseline,
                     "base": base,
                     "publish": publish,
+                    "evidence_files": evidence_files if evidence_files is not None else [],
                     **({"repositories": repositories} if repositories is not None else {}),
                     "worker_defaults": worker_defaults if worker_defaults is not None else {},
                     "stages": stages if stages is not None else {},
@@ -405,7 +413,14 @@ def draft_start_message(
             ),
             "",
         )
-    except (ValueError, TypeError) as exc:
+        for index, path in enumerate(definition["evidence_files"]):
+            target = Path(path).resolve(strict=True)
+            if not target.is_file():
+                raise ValueError(f"Evidence must name a regular file: {path}")
+            with target.open("rb") as handle:
+                handle.read(1)
+            definition["evidence_files"][index] = str(target)
+    except (ValueError, TypeError, OSError) as exc:
         return json.dumps({"valid": False, "error": str(exc)})
     definition.pop("run_id")
     return json.dumps({"valid": True, "command": "/workflow start " + json.dumps(definition)})
@@ -463,12 +478,16 @@ def draft_preview(session_state: Json) -> Json:
             "branch": next((c.get("branch") for c in definition["candidates"]), None),
             "publish": definition.get("publish", False),
             "repositories": definition.get("repositories", []),
+            "evidence_files": definition.get("evidence_files", []),
         }
     }
 
 
 def _repository_read_permission(
-    event: PolicyEvent, repository: str | None, repositories: list[str] | None = None
+    event: PolicyEvent,
+    repository: str | None,
+    repositories: list[str] | None = None,
+    evidence_files: list[str] | None = None,
 ) -> PolicyResponse:
     if event.get("type") == "tool_result":
         return {"result": "ALLOW"}
@@ -480,7 +499,10 @@ def _repository_read_permission(
     if requested not in [repository, *(repositories or [])]:
         return _deny("Reads must use an assigned repository")
     repository = requested
-    return {"result": "ALLOW", "data": {**args, "repository": repository}}
+    return {
+        "result": "ALLOW",
+        "data": {**args, "repository": repository, "evidence_files": evidence_files or []},
+    }
 
 
 def _journal_permission(
@@ -592,6 +614,7 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
                     for path in _workspaces(_candidate({**state, "current": pending["stage"]}))
                 ],
             ],
+            definition.get("evidence_files", []),
         )
     if target == "workflow_journal":
         candidate = _candidate({**state, "current": pending["stage"]})
@@ -651,6 +674,12 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
             skill_read = target in {"sys_os_read", "Read"} and any(
                 resolved.is_relative_to(root) for root in skill_paths
             )
+            evidence_read = (
+                target in {"sys_os_read", "Read"}
+                and key in {"path", "file_path"}
+                and str(resolved) in state.get("definition", {}).get("evidence_files", [])
+                and resolved.is_file()
+            )
             result_read = stage == "compare-results" and any(
                 resolved.is_relative_to(root)
                 for candidate in state.get("candidates", [])
@@ -659,9 +688,13 @@ def _worker_policy(event: PolicyEvent, root_id: str, session_id: str) -> PolicyR
             if (
                 not any(resolved.is_relative_to(root) for root in workspaces)
                 and not skill_read
+                and not evidence_read
                 and not result_read
             ):
-                return _deny("Worker paths must stay in the candidate or installed skill files")
+                return _deny(
+                    "Worker paths must stay in the candidate, installed skill files, "
+                    "or approved read-only evidence files"
+                )
     if target in {"sys_os_write", "sys_os_edit", "Write", "Edit", "apply_patch"}:
         paths = [args.get(key) for key in ("path", "file_path", "notebook_path")]
         if target == "apply_patch" or not any(
@@ -728,12 +761,18 @@ def _analysis_commands(workspace: Path) -> set[str]:
 
 
 def _brief(state: Json) -> str:
+    evidence = (
+        "Approved read-only evidence files (use workflow_read with absolute paths): "
+        + json.dumps(state["definition"].get("evidence_files", []))
+    )
     if state.get("current") in comparison.ANALYSIS_STAGES:
         commands = sorted(
             set().union(*(_analysis_commands(root) for root in _workspaces(_candidate(state))))
         )
         return (
             comparison.brief(state)
+            + "\n"
+            + evidence
             + "\nAdditional repositories: "
             + json.dumps(state["definition"].get("repositories", []))
             + "\nAllowed read commands:\n"
@@ -777,6 +816,7 @@ def _brief(state: Json) -> str:
         [
             f"Stage: {state['current']}",
             f"Task: {state['definition']['task']}",
+            evidence,
             f"Candidate: {candidate['task']}",
             f"Worktree: {candidate['workspace']}",
             f"Branch: {candidate['branch']}",
@@ -1502,6 +1542,7 @@ def _coding_controller(
                     event,
                     repository,
                     [item["repository"] for item in definition.get("repositories", [])],
+                    definition.get("evidence_files", []),
                 )
             return _journal_permission(
                 event,
@@ -2016,11 +2057,15 @@ def _coding_controller(
                     "criteria in task, not a Git baseline. This controller supplies "
                     "the command format; do not load the separate omnigent-workflow skill or "
                     "inspect files with shell commands. Summarize the validated task, repository, "
-                    "baseline, target branch, candidate branch and publication permission. "
+                    "baseline, target branch, candidate branch, read-only evidence files, "
+                    "and publication permission. "
                     "Ask the user to click Start workflow; do not ask them to copy JSON. "
                     "The button approves only the current saved draft. Text clients may send "
                     "/workflow start-draft followed by the saved draft token. "
                     "No implementation starts during drafting."
+                    " Include every external local evidence file named by the user in "
+                    "workflow_draft evidence_files. It validates file access before Start; "
+                    "workers can read only those files, without copying them into candidates."
                 )
                 status["next_action"] += (
                     " For work across repositories, include repositories in workflow_draft: "

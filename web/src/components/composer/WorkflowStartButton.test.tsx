@@ -17,6 +17,7 @@ it("shows server-validated details and sends only the selected draft token", asy
     base: "main",
     branch: "feature/lcs-1670",
     publish: false,
+    evidence_files: ["/support/report.md", "/support/cases.csv"],
   };
   vi.mocked(authenticatedFetch).mockImplementation(
     async () => new Response(JSON.stringify({ draft })),
@@ -35,6 +36,8 @@ it("shows server-validated details and sends only the selected draft token", asy
   expect(send).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText("Review prepared workflow"));
   expect(screen.getByText(/feature\/lcs-1670/)).toBeVisible();
+  expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/report.md");
+  expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/cases.csv");
   rendered.rerender(view(false));
   fireEvent.click(button);
   expect(send).toHaveBeenCalledWith("/workflow start-draft first");

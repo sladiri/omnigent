@@ -834,6 +834,8 @@ def test_prepared_draft_endpoint_and_approval_survive_restart(tmp_path: Path):
     from tests._helpers.server_runner import server_runner
 
     root = Path(__file__).resolve().parents[2]
+    evidence = tmp_path / "report.md"
+    evidence.write_text("Required support evidence\n")
     bundle = _mock_bundle(tmp_path / "draft-controller", "mock-worker", "http://127.0.0.1:1/v1")
     with (
         server_runner(tmp_path / "stack", server_cwd=root) as stack,
@@ -878,9 +880,11 @@ def test_prepared_draft_endpoint_and_approval_survive_restart(tmp_path: Path):
                 "main",
                 "main",
                 branch="feature/lcs-1670",
+                evidence_files=[str(evidence)],
             )
             evaluate("PHASE_TOOL_RESULT", {"result": draft}, {"name": "workflow_draft"})
             saved = preview()
+            assert saved["evidence_files"] == [str(evidence)]
             assert saved["branch"] == "feature/lcs-1670"
             assert saved["publish"] is False
             assert "command" not in saved
@@ -916,6 +920,7 @@ def test_prepared_draft_endpoint_and_approval_survive_restart(tmp_path: Path):
             assert preview() is None
             allowed = evaluate("PHASE_TOOL_CALL", {"name": "workflow_prepare", "arguments": {}})
             assert allowed["data"]["definition"]["candidates"][0]["branch"] == "feature/lcs-1670"
+            assert allowed["data"]["definition"]["evidence_files"] == [str(evidence)]
 
 
 @pytest.mark.timeout(120)
