@@ -608,6 +608,24 @@ def workflow_publish(
         if (
             state is not None
             and state["revision"] != revision
+            and state.get("pr_url")
+            and state.get("commit") == snapshot["head"]
+            and state.get("tree") == _git(root, "rev-parse", "HEAD^{tree}")
+            and all(
+                state.get(key) == value
+                for key, value in {
+                    "base": base,
+                    "remote": remote,
+                    "push_url": remote_url,
+                    "branch": branch,
+                }.items()
+            )
+        ):
+            _save(gitdir / f"omnigent-publication.completed-{state['commit']}.json", state)
+            state = None
+        if (
+            state is not None
+            and state["revision"] != revision
             and not state.get("commit")
             and snapshot["head"] == state["initial_head"]
         ):
@@ -707,10 +725,14 @@ def workflow_publish(
         if len(prs) > 1:
             raise ValueError("Several PRs match the selected branch")
         if prs:
-            if prs[0]["headRefOid"] != state["commit"]:
-                raise ValueError("Existing PR does not match the reviewed commit")
             if prs[0]["state"] == "CLOSED":
                 raise ValueError("The selected branch's PR was closed; refusing to recreate it")
+            if prs[0]["headRefOid"] != state["commit"] and (
+                prs[0]["state"] != "OPEN"
+                or _git(root, "merge-base", prs[0]["headRefOid"], state["commit"])
+                != prs[0]["headRefOid"]
+            ):
+                raise ValueError("Existing PR cannot fast-forward to the reviewed commit")
             state["pr_url"] = prs[0]["url"]
         if not prs or prs[0]["state"] != "MERGED":
             remote_head = _run(
@@ -728,6 +750,22 @@ def workflow_publish(
             )
             if remote_head["object"]["sha"] != state["commit"]:
                 raise ValueError("Remote branch does not contain the reviewed commit")
+            if prs:
+                pr = json.loads(
+                    _run(
+                        root,
+                        "gh",
+                        "pr",
+                        "view",
+                        prs[0]["url"],
+                        "--repo",
+                        repository,
+                        "--json",
+                        "headRefOid,state",
+                    )
+                )
+                if pr["headRefOid"] != state["commit"] or pr["state"] == "CLOSED":
+                    raise ValueError("Existing PR does not match the reviewed commit")
         if not prs:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as handle:
                 handle.write(body)

@@ -402,8 +402,12 @@ has an unknown outcome.
 Publication runs on the local host. It preserves signing settings, obtains the
 active graphical pinentry environment, and allows Git's hardware-key interaction
 to wait. The operation saves publication progress and checks local HEAD, the pinned push
-destination, and existing PRs before repeating work after interruption. Closed or
-merged PRs never cause their deleted branches to be recreated. Do not
+destination, and existing PRs before repeating work after interruption. A follow-up
+at the last published commit archives the completed record and starts a new one
+for the same branch and destination. Incomplete records remain pinned for retry.
+Open PRs can advance to the reviewed commit by a normal fast-forward push; the
+operation verifies the remote branch and PR head afterward. Closed or merged PRs
+never cause their deleted branches to be recreated. Do not
 start a second publication process while the first is waiting for your key.
 
 The coordinator supplies commit/PR text from the final diff. The host operation
