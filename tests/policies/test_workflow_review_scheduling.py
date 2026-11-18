@@ -126,8 +126,9 @@ async def test_previous_scheduler_state_is_preserved_without_dispatch(coding):
     assert coding.state == state
 
 
-async def test_actual_fix_and_independent_recheck_survive_restart(coding, db_uri):
-    await begin(coding, workflow="review-fix", publish=False)
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+async def test_actual_fix_and_independent_recheck_survive_restart(coding, db_uri, provider):
+    await begin(coding, workflow="review-fix", publish=False, provider=provider)
     await finish(coding, findings=[{"id": "bug", "message": "Input is not validated"}])
     review = coding.state["completed"]["one/review-a"]
     before = coding.state

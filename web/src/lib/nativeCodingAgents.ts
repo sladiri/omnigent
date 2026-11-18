@@ -1,4 +1,5 @@
 import type { AvailableAgent } from "@/hooks/useAvailableAgents";
+import { agentRootName } from "@/lib/forkHarness";
 
 export const WRAPPER_LABEL_KEY = "omnigent.wrapper";
 export const UI_MODE_LABEL_KEY = "omnigent.ui";
@@ -427,6 +428,18 @@ export function isNativeCodingAgent(
   agent: Pick<AvailableAgent, "name" | "harness"> | null | undefined,
 ): boolean {
   return nativeCodingAgentForAvailableAgent(agent) !== undefined;
+}
+
+/** A vendor picker row, rather than a custom agent using the same native CLI. */
+export function isNativeHarnessAgent(agent: AvailableAgent): boolean {
+  if (agent.mine || agent.builtin === false || !isNativeCodingAgent(agent)) return false;
+  const name = agentRootName(agent.name);
+  return (
+    agent.builtin === true ||
+    nativeCodingAgentForAgentName(name) !== undefined ||
+    // Older Kiro registrations used this misspelling.
+    (name === "kiro-naitive" && nativeCodingAgentForAvailableAgent(agent)?.key === "kiro")
+  );
 }
 
 /**

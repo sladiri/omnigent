@@ -195,10 +195,13 @@ def coding(db_uri):
     return _Probe(SqlAlchemyConversationStore(db_uri), parse(CONFIG))
 
 
-async def begin(probe, publish=True, ids=("one",), workflow="implement-review-fix"):
+async def begin(
+    probe, publish=True, ids=("one",), workflow="implement-review-fix", provider="codex"
+):
     definition = {
         "repository": "/tmp/repository",
         "task": "Implement a greeting",
+        "provider": provider,
         "workflow": workflow,
         "baseline": "HEAD",
         "base": "main",
@@ -322,8 +325,11 @@ async def finish(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
 @pytest.mark.parametrize("late_publish", [False, True])
-async def test_full_review_sequence_selection_and_publication_gate(coding, workflow, late_publish):
-    await begin(coding, workflow=workflow, publish=not late_publish)
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+async def test_full_review_sequence_selection_and_publication_gate(
+    coding, workflow, late_publish, provider
+):
+    await begin(coding, workflow=workflow, publish=not late_publish, provider=provider)
     assert (await coding.evaluate(_request("/workflow publish one"))).action == PolicyAction.DENY
     titles = []
     stages = ("review-a", "review-b-standards", "review-b-spec")
@@ -1442,8 +1448,9 @@ async def test_stage_answer_does_not_replace_other_gates(coding, overrides):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", [*STAGES, "explore", "compare-results"])
-async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, stage):
-    await begin(coding)
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, stage, provider):
+    await begin(coding, provider=provider)
     session = coding.store.get_conversation(coding.session_id)
     state = session.session_state[STATE_KEY]
     state.update(
@@ -1460,7 +1467,15 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     dispatch = await coding.dispatch()
     uses_opus = stage == "implement" or stage.startswith(("fix-", "verify-"))
-    expected_model = "claude-opus-5[1m]" if uses_opus else "claude-fable-5-1"
+    expected_model = (
+        ("claude-opus-5[1m]" if uses_opus else "claude-fable-5-1")
+        if provider == "claude"
+        else ("gpt-6.2-sol" if uses_opus else "gpt-6.2-astra")
+    )
+    assert dispatch["args"]["harness"] == f"{provider}-native"
+    assert dispatch["args"]["input"].startswith("/goal") == (
+        provider == "codex" and stage not in {"explore", "compare-results"}
+    )
     assert dispatch["args"]["model"] == expected_model
     assert dispatch["args"]["reasoning_effort"] == (
         "high" if stage.startswith("fix-") else "xhigh"
@@ -1472,22 +1487,27 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     before = coding.state
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state == before
-    assert coding.spec.executor.model == "claude-opus-5[1m]"
+    assert coding.spec.executor.model == "gpt-6.2-sol"
     assert coding.spec.executor.reasoning_effort == "high"
-    assert coding.spec.executor.harness_kind == "claude-native"
+    assert coding.spec.executor.harness_kind == "codex-native"
     (worker,) = coding.spec.sub_agents
     assert worker.name == "worker"
-    assert worker.executor.harness_kind == "claude-native"
+    assert worker.executor.harness_kind == "codex-native"
+    from omnigent.runner.tool_dispatch import _subagent_allowed_harnesses
+
+    assert f"{provider}-native" in _subagent_allowed_harnesses("worker", coding.spec)
 
 
 @pytest.mark.asyncio
 async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
-    from omnigent.workflows.controller import draft_start_message
+    from examples.workflow_controller.tools.python.workflow_draft import workflow_draft
+    from omnigent.workflows.controller import draft_preview
 
     args = {
         "workflow": "compare-review-fix",
         "repository": "/tmp/repository",
         "task": "Compare",
+        "provider": "claude",
         "baseline": "HEAD",
         "base": "main",
         "worker_defaults": {"reasoning_effort": "medium"},
@@ -1500,9 +1520,10 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
             content={"name": "workflow_draft", "arguments": args},
         )
     )
-    draft = json.loads(draft_start_message(**result.data))
+    draft = json.loads(workflow_draft(**result.data))
     await coding.evaluate(output("workflow_draft", draft))
     saved = coding.state["draft"]
+    assert draft_preview({STATE_KEY: coding.state})["draft"]["provider"] == "claude"
     # A changed bundle must not alter the approved draft or a running workflow.
     coding.spec.guardrails.policies[0].function.arguments["worker_defaults"] = {
         "model": "claude-opus-5[1m]",
@@ -1519,6 +1540,7 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
     assert dispatch["args"]["reasoning_effort"] == "high"
     assert coding.state["definition"]["worker_defaults"] == {
         "model": "claude-fable-5-1",
+        "harness": "claude-native",
         "reasoning_effort": "medium",
     }
     assert coding.state["definition"]["stages"]["fix-a"] == {
@@ -1531,6 +1553,8 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
 @pytest.mark.parametrize(
     "settings",
     [
+        {"provider": "unknown"},
+        {"worker_defaults": {"harness": "unknown"}},
         {"worker_defaults": []},
         {"worker_defaults": None},
         {"worker_defaults": {"model": "--bad"}},

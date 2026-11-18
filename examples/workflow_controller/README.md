@@ -116,45 +116,51 @@ To launch the packaged agent from a checkout instead:
 /usr/bin/env uv run --no-sync omnigent run examples/workflow_controller --server http://127.0.0.1:6767
 ```
 
-The coordinator and workers use `claude-native`. Configure Claude Code on the
-runner before launching. Both the server and runner need an Omnigent
-installation that includes `omnigent.workflows`.
+For a new workflow session, choose **Coordinator: Codex** or **Coordinator: Claude**.
+The default is Codex. This selects the controller harness without replacing the
+workflow agent or its tools. Configure Codex and/or Claude Code
+on the runner for the providers you use. Both server and runner need an
+Omnigent installation that includes `omnigent.workflows`.
 
-### Model and reasoning effort
+### Provider, model, and reasoning effort
 
-The coordinator and fix workers use Claude Opus 5 (1M context) at high effort.
-Implementation and verification workers use Opus at xhigh effort. Exploration,
-comparison, and review workers use Claude Fable 5.1 at xhigh effort.
-Journaling and publication keep their existing tools and callers; no extra helper
-sessions are created.
-The controller's model and effort remain the session's launch selection.
+Choose Codex or Claude in the worker provider selector when preparing a workflow.
+The controller passes
+`provider="codex"` (default) or `provider="claude"` to `workflow_draft`.
+This choice controls worker harnesses and stage models. The coordinator's
+harness and model stay fixed after launch; a Codex coordinator can
+run Claude workers, and a Claude coordinator can run Codex workers.
 
-The bundle's `guardrails.policies.workflow.factory_params` declares
-`worker_defaults` and `stages`. Each workflow definition can override these
-settings through the same fields, including via `workflow_draft`. For example,
-this fragment changes implementation effort and one review stage:
+| Profile | Worker harness | Implement / fix / verify | Explore / compare / review |
+| --- | --- | --- | --- |
+| Codex | `codex-native` | `gpt-6.2-sol` | `gpt-6.2-astra` |
+| Claude | `claude-native` | `claude-opus-5[1m]` | `claude-fable-5-1` |
+
+Fix stages use high effort. Other worker stages use xhigh effort.
+The controller defaults to Sol at high effort. Configure access to the chosen
+models on the runner. No extra journal or publication sessions are created.
+
+The bundle's `guardrails.policies.workflow.factory_params` holds the default
+Codex `worker_defaults` and `stages`, plus the Claude settings under
+`profiles.claude`. Each run can override `harness`, `model`, and
+`reasoning_effort` through `worker_defaults` or a named stage. For example:
 
 ```yaml
-worker_defaults:
-  model: claude-fable-5-1
-  reasoning_effort: xhigh
+provider: claude
 stages:
   implement:
-    model: claude-opus-5[1m]
-    reasoning_effort: high
-  review-a:
     reasoning_effort: high
 ```
 
-Fields merge with the bundle settings; each named stage overrides worker defaults.
-Use exact stage names: `explore`, `compare-results`, `implement`, `review-a`,
-`fix-a`, `verify-a`, `review-b-standards`, `review-b-spec`, `fix-b`,
-`verify-b-standards`, and `verify-b-spec`. Unknown stages or settings are rejected.
-The worker's Claude account must have access to the configured models, including
-Fable. The native harness validates the selected model and effort.
+Stage settings override worker defaults. Use exact stage names: `explore`,
+`compare-results`, `implement`, `review-a`, `fix-a`, `verify-a`,
+`review-b-standards`, `review-b-spec`, `fix-b`, `verify-b-standards`, and
+`verify-b-spec`. Unknown profiles, harnesses, stages, or settings are rejected.
+The worker explicitly allows both native harnesses. Other providers are not
+supported by this bundle yet.
 
 The resolved configuration is saved with the approved draft and workflow run.
-Each fresh worker gets its stage's model and effort. Resume and reconciliation
+Each fresh worker gets its stage's harness, model, and effort. Resume and reconciliation
 reuse existing workers without changing either setting. A retry creates a new
 worker with the saved stage settings. Reinstalling the bundle changes defaults
 for new runs, not settings already saved in a run. Model selection does not

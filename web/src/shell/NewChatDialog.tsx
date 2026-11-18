@@ -223,6 +223,7 @@ import { useOmnigentAnalytics } from "@/lib/analytics";
 import { isCurrentServerLocal } from "@/lib/serverOrigin";
 import {
   isNativeCodingAgent,
+  isNativeHarnessAgent,
   nativeAgentHasCapability,
   nativeCodingAgentForAvailableAgent,
   nativeWrapperLabelsForAgent,
@@ -1617,7 +1618,9 @@ export function AgentHarnessPicker({
     const summary = details || entrySummaries?.[agent.id] || "Default";
     const editable = selectedConfigContent !== undefined && (isEntryConfigurable?.(agent) ?? true);
     const readiness = harnessReadinessOnHost(agent.harness, host);
-    const unavailable = !readiness.selectable && readiness.fallbackRelevant;
+    // The workflow coordinator can select a different harness before launch.
+    const unavailable =
+      agent.name !== "workflow-controller" && !readiness.selectable && readiness.fallbackRelevant;
     const warning = harnessWarningBadgeText(readiness.reason, collapsedBadge);
     const warningMessage = harnessWarningMessage(
       agent.display_name,
@@ -2219,12 +2222,15 @@ export function NewChatLandingScreen() {
   // user's own agents stay under "Agents" even on a native harness, so one never
   // passes for a harness row (or for the Claude Code wrapper Smart Routing binds).
   const harnessEntries = useMemo(
-    () => agentList.filter((a) => !a.mine && (isNativeCodingAgent(a) || isAcpHarnessAgent(a))),
+    () =>
+      agentList.filter(
+        (a) => isNativeHarnessAgent(a) || (!a.mine && a.builtin !== false && isAcpHarnessAgent(a)),
+      ),
     [agentList],
   );
   const agentEntries = useMemo(
-    () => agentList.filter((a) => a.mine || (!isNativeCodingAgent(a) && !isAcpHarnessAgent(a))),
-    [agentList],
+    () => agentList.filter((a) => !harnessEntries.includes(a)),
+    [agentList, harnessEntries],
   );
 
   // "Create custom agent" dialog state and pending bundle. When the user
@@ -3053,8 +3059,8 @@ export function NewChatLandingScreen() {
             ? cachedPickerOptions!.agent.id
             : (agentList[0]?.id ?? null);
   const effectiveAgentId = automaticHarnessFallback?.candidate?.value.id ?? defaultEffectiveAgentId;
-  const selectedAgent = useMemo(
-    () =>
+  const selectedAgent = useMemo(() => {
+    const agent =
       effectiveAgentId === PENDING_AGENT_ID && pendingAgent
         ? ({
             id: PENDING_AGENT_ID,
@@ -3064,9 +3070,15 @@ export function NewChatLandingScreen() {
             harness: pendingAgent.harness ?? null,
             skills: [],
           } satisfies AvailableAgent)
-        : agentList.find((a) => a.id === effectiveAgentId),
-    [agentList, effectiveAgentId, pendingAgent],
-  );
+        : agentList.find((a) => a.id === effectiveAgentId);
+    return agent?.name === "workflow-controller" &&
+      (pickedHarness === "codex-native" || pickedHarness === "claude-native")
+      ? { ...agent, harness: pickedHarness }
+      : agent;
+  }, [agentList, effectiveAgentId, pendingAgent, pickedHarness]);
+  const workflowHarnessChanged =
+    selectedAgent?.name === "workflow-controller" &&
+    selectedAgent.harness !== agentList.find((a) => a.id === effectiveAgentId)?.harness;
   // The selected native harness persists and restores harness-specific model,
   // effort, and permission knobs.
   const selectedNativeHarness = nativeCodingAgentForAvailableAgent(selectedAgent)?.harness ?? null;
@@ -4827,14 +4839,19 @@ export function NewChatLandingScreen() {
   const visibleWorktreeHeader = cachedWorkspace ?? worktreeHeader;
 
   const pickerSelectionError =
-    pickerLoading || !pickerEdits?.pendingValidation
-      ? null
-      : pickerEdits && pickerEdits.agentId !== effectiveAgentId
-        ? "The selected agent is no longer available. Choose an agent to continue."
-        : pickerEdits?.options.model &&
-            !pickerModelOptions.some((option) => option.id === pickerEdits.options.model)
-          ? "The selected model is no longer available. Choose a model to continue."
-          : null;
+    workflowHarnessChanged &&
+    !routingOn &&
+    !pickedModel &&
+    !pickerModelOptions.some((option) => option.isDefault)
+      ? "Choose a coordinator model for this harness."
+      : pickerLoading || !pickerEdits?.pendingValidation
+        ? null
+        : pickerEdits && pickerEdits.agentId !== effectiveAgentId
+          ? "The selected agent is no longer available. Choose an agent to continue."
+          : pickerEdits?.options.model &&
+              !pickerModelOptions.some((option) => option.id === pickerEdits.options.model)
+            ? "The selected model is no longer available. Choose a model to continue."
+            : null;
   useEffect(() => {
     if (!pickerLoading && pickerSelectionError === null && pickerEdits?.pendingValidation) {
       setPickerEdits({ ...pickerEdits, pendingValidation: false });
@@ -5238,7 +5255,7 @@ export function NewChatLandingScreen() {
       // in an existing worktree sends no git opts — the workspace is bound
       // straight to that dir, which also sidesteps the "branch already
       // exists" guard.
-      const agent = agentList.find((a) => a.id === effectiveAgentId);
+      const agent = selectedAgent;
       const nativeAgent = nativeCodingAgentForAvailableAgent(agent);
       const nativeLabels = nativeWrapperLabelsForAgent(agent);
       const agentSupportsPermissionMode = nativeAgentHasCapability(agent, "permissionMode");
@@ -5282,10 +5299,12 @@ export function NewChatLandingScreen() {
       // `currentFusionCombo` (which falls back to a real combo), so resolve the
       // SAME way here — otherwise Create would send a combo Devin no longer
       // offers while the picker showed a different one.
+      const defaultModelRow = pickerModelOptions.find((option) => option.isDefault);
+      const resolvedDefaultModel = defaultModelRow?.model ?? defaultModelRow?.id ?? null;
       const submittedModel =
         fusionSelected && pickerFusion !== undefined
           ? currentFusionCombo(pickerFusion, fusionModelUid).modelUid
-          : pickedModel;
+          : pickedModel || (workflowHarnessChanged ? (resolvedDefaultModel ?? "") : "");
       const normalizedModelOverride =
         !smartRoutingHarnessSelected &&
         !routingOwnsModel &&
@@ -5313,11 +5332,6 @@ export function NewChatLandingScreen() {
         (effortOverride ?? pickedEffort)
           ? (effortOverride ?? pickedEffort)
           : null;
-      // Resolved default (shown when nothing is pinned): the catalog's default
-      // row's provider-facing model id, else its row id.
-      const defaultModelRow = pickerModelOptions.find((option) => option.isDefault);
-      const resolvedDefaultModel = defaultModelRow?.model ?? defaultModelRow?.id ?? null;
-
       // Prepend each "@"-tagged path as an attachment marker on its own line —
       // the same wording the native executors emit and that title-seeding
       // strips. The runner, rooted at this workspace, reads the on-disk file
@@ -6415,6 +6429,13 @@ export function NewChatLandingScreen() {
                 beforeActions: (
                   <WorkflowPromptButtons
                     agentName={selectedAgent?.name}
+                    coordinator={{
+                      harness:
+                        selectedNativeHarness === "claude-native"
+                          ? "claude-native"
+                          : "codex-native",
+                      onChange: (harness) => handleSetPickedHarness(harness),
+                    }}
                     disabled={creating}
                     draft={message}
                     onChange={(text) => {
@@ -6769,7 +6790,9 @@ export function NewChatLandingScreen() {
                     the selected entry's submenu owns run configuration. */}
                       <AgentHarnessPicker
                         openNonce={modelPickerOpenNonce}
-                        agentEntries={agentEntries}
+                        agentEntries={agentEntries.map((agent) =>
+                          agent.id === selectedAgent?.id ? selectedAgent : agent,
+                        )}
                         harnessEntries={harnessEntries}
                         effectiveAgentId={effectiveAgentId}
                         agentLabel={agentLabel}

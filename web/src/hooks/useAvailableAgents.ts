@@ -9,6 +9,7 @@ import {
   nativeCodingAgentForAvailableAgent,
   nativeCodingAgentForAgentName,
   nativeCodingAgentForHarness,
+  isNativeHarnessAgent,
 } from "@/lib/nativeCodingAgents";
 import type { SkillSummary } from "@/lib/types";
 
@@ -82,7 +83,7 @@ function dedupeNativeAgents(agents: AvailableAgent[]): AvailableAgent[] {
   const nativeIndex = new Map<string, number>();
   for (const agent of agents) {
     const nativeAgent = nativeCodingAgentForAvailableAgent(agent);
-    if (nativeAgent === undefined) {
+    if (nativeAgent === undefined || !isNativeHarnessAgent(agent)) {
       result.push(agent);
       continue;
     }
@@ -148,7 +149,7 @@ function agentFromWire(a: BuiltinAgentWire): AvailableAgent {
   return {
     id: a.id,
     name: a.name,
-    display_name: displayNameForAgent(a.name, a.harness),
+    display_name: displayNameForAgent(a.name, a.builtin === false ? null : a.harness),
     description: a.description ?? null,
     harness: a.harness ?? null,
     skills: a.skills ?? [],
@@ -265,23 +266,23 @@ export async function prefetchAvailableAgentDetails(
           ? a
           : {
               ...a,
-              display_name: displayNameForAgent(json.name, json.harness),
+              display_name: displayNameForAgent(json.name),
               description: json.description ?? null,
               harness: json.harness ?? null,
               skills: json.skills ?? [],
             },
       );
-      // If enrichment reveals this agent is a native coding agent (e.g. a
-      // kiro-native session with a non-canonical name), remove it when a
-      // seeded built-in with the same native key already exists so it doesn't
-      // surface as a duplicate picker row.
+      // Collapse vendor aliases only; custom agents can share their harness.
       const enrichedAgent = enriched.find((a) => a.id === agent.id);
       const enrichedKey = enrichedAgent
         ? nativeCodingAgentForAvailableAgent(enrichedAgent)?.key
         : undefined;
-      if (enrichedKey) {
+      if (enrichedKey && enrichedAgent && isNativeHarnessAgent(enrichedAgent)) {
         const builtinExists = enriched.some(
-          (a) => a.id !== agent.id && nativeCodingAgentForAvailableAgent(a)?.key === enrichedKey,
+          (a) =>
+            a.id !== agent.id &&
+            isNativeHarnessAgent(a) &&
+            nativeCodingAgentForAvailableAgent(a)?.key === enrichedKey,
         );
         if (builtinExists) return enriched.filter((a) => a.id !== agent.id);
       }
