@@ -138,6 +138,12 @@ guardrails:
           fix-a:
             model: claude-opus-5[1m]
             reasoning_effort: high
+          verify-a:
+            model: claude-opus-5[1m]
           fix-b:
             model: claude-opus-5[1m]
             reasoning_effort: high
+          verify-b-standards:
+            model: claude-opus-5[1m]
+          verify-b-spec:
+            model: claude-opus-5[1m]
