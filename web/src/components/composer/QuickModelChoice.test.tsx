@@ -76,6 +76,46 @@ describe("QuickModelChoice", () => {
     expect(screen.queryByRole("button", { name: "Hi: Fable" })).toBeNull();
   });
 
+  it("selects Fable's versioned picker ID and tracks the reported model", () => {
+    const onSelect = vi.fn();
+    const props = {
+      options: [
+        { id: "sonnet", model: "claude-sonnet-5-5" },
+        { id: "opus", model: "claude-opus-5-5" },
+        { id: "claude-fable-5-2[1m]", model: "claude-fable-5-2" },
+      ],
+      disabled: false,
+      onSelect,
+    };
+    const { rerender } = render(
+      <QuickModelChoice kind="claude" {...props} currentModel="claude-opus-5-5" />,
+    );
+    const hi = screen.getByRole("button", { name: "Hi: Fable" });
+    expect(hi).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(hi);
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("claude-fable-5-2[1m]");
+    rerender(<QuickModelChoice kind="claude" {...props} currentModel="claude-fable-5-2" />);
+    expect(hi).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("hides an ambiguous Claude family instead of choosing a version", () => {
+    render(
+      <QuickModelChoice
+        kind="claude"
+        options={[
+          { id: "sonnet" },
+          { id: "fable", model: "claude-fable-5-1" },
+          { id: "claude-fable-5-2[1m]", model: "claude-fable-5-2" },
+        ]}
+        currentModel={null}
+        disabled={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Lo: Sonnet" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Hi: Fable" })).toBeNull();
+  });
+
   it("blocks model changes when disabled", () => {
     const onSelect = vi.fn();
     render(
