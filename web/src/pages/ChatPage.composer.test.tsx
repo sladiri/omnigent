@@ -7052,8 +7052,8 @@ describe("Composer config gear", () => {
 
   describe("quick Codex model choice", () => {
     const options = [
-      { id: "gpt-6.1-sol", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
-      { id: "gpt-6-astra", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+      { id: "gpt-6.2-sol", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
+      { id: "gpt-6.2-astra", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
     ];
     const props = () =>
       composerProps({
@@ -7070,23 +7070,23 @@ describe("Composer config gear", () => {
       });
       const setEffort = vi.fn().mockResolvedValue(undefined);
       useChatStore.setState({
-        llmModel: "gpt-6.1-sol",
+        llmModel: "gpt-6.2-sol",
         sessionReasoningEffort: "medium",
         setModel,
         setEffort,
       });
       renderWithTooltips(<Composer {...props()} />);
-      const med = screen.getByRole("button", { name: "Med: GPT-6.1 Sol" });
-      const hi = screen.getByRole("button", { name: "Hi: GPT-6 Astra" });
+      const med = screen.getByRole("button", { name: "Med: GPT-6.2 Sol" });
+      const hi = screen.getByRole("button", { name: "Hi: GPT-6.2 Astra" });
       fireEvent.click(hi);
       await waitFor(() => expect(setEffort).toHaveBeenCalledWith(null));
-      expect(setModel).toHaveBeenCalledWith("gpt-6-astra", { expectConfirmation: true });
+      expect(setModel).toHaveBeenCalledWith("gpt-6.2-astra", { expectConfirmation: true });
       expect(med).toHaveAttribute("aria-pressed", "true");
       expect(hi).toBeDisabled();
       fireEvent.click(med);
       expect(setModel).toHaveBeenCalledTimes(1);
       expect(screen.queryByTestId("composer-agent-menu")).toBeNull();
-      act(() => useChatStore.setState({ llmModel: "gpt-6-astra", pendingModelChange: null }));
+      act(() => useChatStore.setState({ llmModel: "gpt-6.2-astra", pendingModelChange: null }));
       expect(hi).toHaveAttribute("aria-pressed", "true");
       expect(hi).toBeEnabled();
     });
@@ -7098,7 +7098,7 @@ describe("Composer config gear", () => {
 
     it("disables changes for read-only sessions", () => {
       renderWithTooltips(<Composer {...props()} readOnlyReason="Read only" />);
-      expect(screen.getByRole("button", { name: "Hi: GPT-6 Astra" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Hi: GPT-6.2 Astra" })).toBeDisabled();
     });
   });
 
