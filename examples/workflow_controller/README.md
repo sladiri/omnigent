@@ -121,9 +121,9 @@ Omnigent installation containing `omnigent.workflows`.
 
 ### Model and reasoning effort
 
-The bundle defaults the coordinator to GPT-6.1 Sol/high. All exploration,
+The bundle defaults the coordinator to GPT-6.2 Sol/high. All exploration,
 comparison, review, and verification workers use Astra/xhigh.
-Implementation workers use GPT-6.1 Sol/xhigh. Fix workers use GPT-6.1 Sol/high.
+Implementation workers use GPT-6.2 Sol/xhigh. Fix workers use GPT-6.2 Sol/high.
 Journaling and publication keep their existing tools and callers; no extra helper
 sessions are created.
 The controller's model and effort remain the session's launch selection.
@@ -135,11 +135,11 @@ this fragment changes implementation effort and one review stage:
 
 ```yaml
 worker_defaults:
-  model: gpt-6-astra
+  model: gpt-6.2-astra
   reasoning_effort: xhigh
 stages:
   implement:
-    model: gpt-6.1-sol
+    model: gpt-6.2-sol
     reasoning_effort: high
   review-a:
     reasoning_effort: high
