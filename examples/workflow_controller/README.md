@@ -22,12 +22,13 @@ advance a review gate. Review and analysis workers cannot create worktrees.
 Read-only `git merge-base` ancestry checks are allowed in implementation, fix,
 and review stages.
 
-Existing implementation, review, and fix workers start a native Codex goal for
+Implementation, review, and fix workers start a Claude Code goal for
 their assigned stage report. Exploration and result comparison do not start goals.
 Each worker reads the full task and prior evidence through `workflow_stage`, so
-long briefs do not exceed the native goal objective limit. Codex continues work until the report is
-ready. The goal ends with an honest `COMPLETE`, `NEEDS_INPUT`, or `BLOCKED` report;
-only the controller decides whether that report passes the stage gate. A missing
+long briefs fit within the native goal objective limit. Claude continues until
+the report is ready. The goal ends with a `COMPLETE`, `NEEDS_INPUT`, or `BLOCKED`
+report.
+The controller decides whether that report passes the stage gate. A missing
 user decision stops dependent work and leaves the controller waiting for an
 answer. Answers and retries start a fresh worker for the same stage.
 
@@ -115,15 +116,15 @@ To launch the packaged agent from a checkout instead:
 /usr/bin/env uv run --no-sync omnigent run examples/workflow_controller --server http://127.0.0.1:6767
 ```
 
-The default coordinator and worker harness is `codex-native`. Configure that
-harness normally before launching. The server and local runner must both use an
-Omnigent installation containing `omnigent.workflows`.
+The coordinator and workers use `claude-native`. Configure Claude Code on the
+runner before launching. Both the server and runner need an Omnigent
+installation that includes `omnigent.workflows`.
 
 ### Model and reasoning effort
 
-The bundle defaults the coordinator to GPT-6.2 Sol/high. All exploration,
-comparison, review, and verification workers use Astra/xhigh.
-Implementation workers use GPT-6.2 Sol/xhigh. Fix workers use GPT-6.2 Sol/high.
+The coordinator and fix workers use Claude Opus 5 (1M context) at high effort.
+Implementation workers use the same model at xhigh effort. Exploration,
+comparison, review, and verification workers use Claude Fable 5.1 at xhigh effort.
 Journaling and publication keep their existing tools and callers; no extra helper
 sessions are created.
 The controller's model and effort remain the session's launch selection.
@@ -135,11 +136,11 @@ this fragment changes implementation effort and one review stage:
 
 ```yaml
 worker_defaults:
-  model: gpt-6.2-astra
+  model: claude-fable-5-1
   reasoning_effort: xhigh
 stages:
   implement:
-    model: gpt-6.2-sol
+    model: claude-opus-5[1m]
     reasoning_effort: high
   review-a:
     reasoning_effort: high
@@ -149,8 +150,8 @@ Fields merge with the bundle settings; each named stage overrides worker default
 Use exact stage names: `explore`, `compare-results`, `implement`, `review-a`,
 `fix-a`, `verify-a`, `review-b-standards`, `review-b-spec`, `fix-b`,
 `verify-b-standards`, and `verify-b-spec`. Unknown stages or settings are rejected.
-Models must be available to the worker's Codex account; effort must be supported
-by that model. The native harness validates the selected model/effort pair.
+The worker's Claude account must have access to the configured models, including
+Fable. The native harness validates the selected model and effort.
 
 The resolved configuration is saved with the approved draft and workflow run.
 Each fresh worker gets its stage's model and effort. Resume and reconciliation
@@ -380,8 +381,7 @@ The other candidate worktrees remain available. The controller does not copy the
 selected files into the original checkout. Review already operates in the
 original worktree; its fixes are present there.
 
-Explicit workflow workers wake the controller when they finish, including native
-Codex controllers. Codex internal side chats do not send workflow inbox wakes.
+Explicit workflow workers wake the controller when they finish.
 If a worker returns an invalid stage ID, the workflow blocks and preserves its
 question and evidence. Use **Answer** to supply recovery instructions or
 `/workflow retry` to request a corrected report. Either repeats the stage;
@@ -475,13 +475,12 @@ against the candidate after resolving relative paths and symlinks. Unrecognized
 patch input is denied. Review stages still reject edits. Workers cannot create or
 switch to sibling worktrees; the coordinator owns candidate creation.
 
-Workers run as the local user with `os_env.sandbox.type: none`, as native Codex
-does. Policy guards constrain declared paths, deny reviewer write tools, and
-reject publication commands. They are workflow controls, not a security sandbox
+Workers run as the local user with `os_env.sandbox.type: none`. Policy guards
+constrain declared paths, deny reviewer write tools, and reject publication commands. They are workflow controls, not a security sandbox
 for arbitrary shell code. Use a trusted local repository and runner.
 
 This controller targets one local server and its runner. It does not provide a
 multi-server distributed lock. The quality of proposed designs, recommendations,
-and native Codex reviews requires manual provider-backed verification; deterministic
+and native Claude reviews requires manual provider-backed verification. Deterministic
 tests validate the tool and state transitions. Keep the coordinator session and candidate worktrees until
 publication and its evidence are complete.

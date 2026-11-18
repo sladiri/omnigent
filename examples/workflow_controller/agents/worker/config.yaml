@@ -4,7 +4,7 @@ description: Implement, review, or fix only the assigned candidate stage.
 executor:
   type: omnigent
   config:
-    harness: codex-native
+    harness: claude-native
 os_env:
   type: caller_process
   cwd: .

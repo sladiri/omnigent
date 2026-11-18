@@ -3,10 +3,10 @@ name: workflow-controller
 description: Implement candidates or review existing work, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
-  model: gpt-6.2-sol
+  model: claude-opus-5[1m]
   reasoning_effort: high
   config:
-    harness: codex-native
+    harness: claude-native
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.
@@ -129,15 +129,15 @@ guardrails:
       factory_params:
         max_attempts: 2
         worker_defaults:
-          model: gpt-6.2-astra
+          model: claude-fable-5-1
           reasoning_effort: xhigh
         stages:
           implement:
-            model: gpt-6.2-sol
+            model: claude-opus-5[1m]
             reasoning_effort: xhigh
           fix-a:
-            model: gpt-6.2-sol
+            model: claude-opus-5[1m]
             reasoning_effort: high
           fix-b:
-            model: gpt-6.2-sol
+            model: claude-opus-5[1m]
             reasoning_effort: high

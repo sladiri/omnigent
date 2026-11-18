@@ -24,7 +24,7 @@ from omnigent.policies.builtins.orchestration import blast_radius, read_only_os
 from omnigent.policies.builtins.working_dir import _GIT_VALUE_OPTS, block_working_dir_changes
 from omnigent.policies.schema import PolicyEvent, PolicyResponse, request_user_text
 from omnigent.stores import ConversationStore
-from omnigent.util.reasoning_effort import CODEX_NATIVE_EFFORTS
+from omnigent.util.reasoning_effort import EFFORT_VALUES
 from omnigent.workflows import comparison
 
 Json: TypeAlias = dict[str, Any]  # type: ignore[explicit-any]
@@ -296,7 +296,7 @@ def _execution_settings(
             result["model"] = validate_model_override(result["model"])
         if "reasoning_effort" in result and (
             not isinstance(result["reasoning_effort"], str)
-            or result["reasoning_effort"] not in CODEX_NATIVE_EFFORTS
+            or result["reasoning_effort"] not in EFFORT_VALUES
         ):
             raise ValueError("Unsupported worker reasoning_effort")
         return result
@@ -1406,7 +1406,7 @@ def _recover_worker_question(
     if (
         pending.get("terminal_status") in {"failed", "cancelled"}
         or child.live_status != "idle"
-        or child.labels.get("omnigent.wrapper") != "codex-native-ui"
+        or child.labels.get("omnigent.wrapper") not in {"codex-native-ui", "claude-code-native-ui"}
         or not child.labels.get("omnigent.subagent.dispatch_id")
         or (pending.get("child_id") and pending["child_id"] != child.id)
     ):
