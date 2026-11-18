@@ -1120,8 +1120,9 @@ async def test_malformed_stage_preserves_worker_question_without_advancing(codin
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["workflow_reconcile", "workflow_status"])
 @pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
+@pytest.mark.parametrize("wrapper", ["codex-native-ui", "claude-code-native-ui"])
 async def test_recover_native_question_and_bind_answer_across_restart(
-    coding, monkeypatch, source, workflow
+    coding, monkeypatch, source, workflow, wrapper
 ):
     from omnigent.entities import MessageData, NewConversationItem
     from omnigent.workflows.controller import draft_preview
@@ -1134,7 +1135,7 @@ async def test_recover_native_question_and_bind_answer_across_restart(
         parent_conversation_id=coding.session_id,
         labels={
             "omnigent.subagent.dispatch_id": "saved-work",
-            "omnigent.wrapper": "codex-native-ui",
+            "omnigent.wrapper": wrapper,
         },
     )
     report = {
@@ -1347,19 +1348,25 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     dispatch = await coding.dispatch()
     implementation = stage == "implement" or stage.startswith("fix-")
-    assert dispatch["args"]["model"] == ("gpt-6.2-sol" if implementation else "gpt-6.2-astra")
+    assert dispatch["args"]["model"] == (
+        "claude-opus-5[1m]" if implementation else "claude-fable-5-1"
+    )
     assert dispatch["args"]["reasoning_effort"] == (
         "high" if stage.startswith("fix-") else "xhigh"
     )
     if stage.endswith("-b-standards"):
         paired = await coding.dispatch()
-        assert paired["args"]["model"] == "gpt-6.2-astra"
+        assert paired["args"]["model"] == "claude-fable-5-1"
         assert paired["args"]["reasoning_effort"] == "xhigh"
     before = coding.state
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
     assert coding.state == before
-    assert coding.spec.executor.model == "gpt-6.2-sol"
+    assert coding.spec.executor.model == "claude-opus-5[1m]"
     assert coding.spec.executor.reasoning_effort == "high"
+    assert coding.spec.executor.harness_kind == "claude-native"
+    (worker,) = coding.spec.sub_agents
+    assert worker.name == "worker"
+    assert worker.executor.harness_kind == "claude-native"
 
 
 @pytest.mark.asyncio
@@ -1373,7 +1380,7 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
         "baseline": "HEAD",
         "base": "main",
         "worker_defaults": {"reasoning_effort": "medium"},
-        "stages": {"explore": {"model": "gpt-6.2-sol", "reasoning_effort": "high"}},
+        "stages": {"explore": {"model": "claude-opus-5[1m]", "reasoning_effort": "high"}},
     }
     result = await coding.evaluate(
         EvaluationContext(
@@ -1387,24 +1394,24 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
     saved = coding.state["draft"]
     # A changed bundle must not alter the approved draft or a running workflow.
     coding.spec.guardrails.policies[0].function.arguments["worker_defaults"] = {
-        "model": "gpt-6.2-sol",
+        "model": "claude-opus-5[1m]",
         "reasoning_effort": "low",
     }
     coding.spec.guardrails.policies[0].function.arguments["stages"]["review-a"] = {
-        "model": "gpt-6.2-sol",
+        "model": "claude-opus-5[1m]",
         "reasoning_effort": "low",
     }
     await coding.evaluate(_request("/workflow start-draft " + saved["token"]))
     assert coding.state["definition"] == saved["definition"]
     dispatch = await coding.dispatch()
-    assert dispatch["args"]["model"] == "gpt-6.2-sol"
+    assert dispatch["args"]["model"] == "claude-opus-5[1m]"
     assert dispatch["args"]["reasoning_effort"] == "high"
     assert coding.state["definition"]["worker_defaults"] == {
-        "model": "gpt-6.2-astra",
+        "model": "claude-fable-5-1",
         "reasoning_effort": "medium",
     }
     assert coding.state["definition"]["stages"]["fix-a"] == {
-        "model": "gpt-6.2-sol",
+        "model": "claude-opus-5[1m]",
         "reasoning_effort": "high",
     }
 
