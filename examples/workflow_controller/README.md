@@ -123,8 +123,8 @@ installation that includes `omnigent.workflows`.
 ### Model and reasoning effort
 
 The coordinator and fix workers use Claude Opus 5 (1M context) at high effort.
-Implementation workers use the same model at xhigh effort. Exploration,
-comparison, review, and verification workers use Claude Fable 5.1 at xhigh effort.
+Implementation and verification workers use Opus at xhigh effort. Exploration,
+comparison, and review workers use Claude Fable 5.1 at xhigh effort.
 Journaling and publication keep their existing tools and callers; no extra helper
 sessions are created.
 The controller's model and effort remain the session's launch selection.

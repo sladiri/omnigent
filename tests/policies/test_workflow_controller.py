@@ -1347,16 +1347,15 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
             state["rechecks"].append("verify-b-spec")
     coding.store.set_session_state(coding.session_id, {STATE_KEY: state})
     dispatch = await coding.dispatch()
-    implementation = stage == "implement" or stage.startswith("fix-")
-    assert dispatch["args"]["model"] == (
-        "claude-opus-5[1m]" if implementation else "claude-fable-5-1"
-    )
+    uses_opus = stage == "implement" or stage.startswith(("fix-", "verify-"))
+    expected_model = "claude-opus-5[1m]" if uses_opus else "claude-fable-5-1"
+    assert dispatch["args"]["model"] == expected_model
     assert dispatch["args"]["reasoning_effort"] == (
         "high" if stage.startswith("fix-") else "xhigh"
     )
     if stage.endswith("-b-standards"):
         paired = await coding.dispatch()
-        assert paired["args"]["model"] == "claude-fable-5-1"
+        assert paired["args"]["model"] == expected_model
         assert paired["args"]["reasoning_effort"] == "xhigh"
     before = coding.state
     assert (await coding.evaluate(_call())).action == PolicyAction.DENY
