@@ -6718,6 +6718,35 @@ describe("NewChatLandingScreen", () => {
     expect(body.model_override).toBe("databricks-gpt-6-2-astra");
   });
 
+  it.each(["low", "medium", "high", "xhigh"])(
+    "submits the quick Claude model choice with %s effort",
+    async (effort) => {
+      authenticatedFetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: "conv_new" }),
+      } as unknown as Response);
+      const claudeModels = {
+        ...CLAUDE_MODEL_OPTIONS_RESULT,
+        data: [...CLAUDE_MODEL_OPTIONS_RESULT.data, { id: "fable", displayName: "Fable" }],
+      };
+      mockModelQueries(() => claudeModels);
+      renderLanding();
+      const hi = await screen.findByRole("button", { name: "Hi: Fable" });
+      await waitFor(() => expect(hi).toBeEnabled());
+      fireEvent.click(hi);
+      expect(hi).toHaveAttribute("aria-pressed", "true");
+      fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+        target: { value: "run the build" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: `Send with ${effort} effort` }));
+      await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
+      const [, init] = authenticatedFetchMock.mock.calls[0];
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.model_override).toBe("fable");
+      expect(body.reasoning_effort).toBe(effort);
+    },
+  );
+
   it("offers the Codex effort ladder in the gear modal and sends the pick as reasoning_effort", async () => {
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
