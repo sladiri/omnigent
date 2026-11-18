@@ -5,24 +5,24 @@ import { CodexModelChoice } from "./CodexModelChoice";
 afterEach(cleanup);
 
 const options = [
-  { id: "sol", model: "system.ai.gpt-6-1-sol" },
-  { id: "astra", model: "gpt-6-astra" },
+  { id: "sol", model: "system.ai.gpt-6-2-sol" },
+  { id: "astra", model: "gpt-6.2-astra" },
 ];
 
 describe("CodexModelChoice", () => {
   it("selects advertised IDs and highlights only the reported model", () => {
     const onSelect = vi.fn();
-    const props = { options, currentModel: "databricks-gpt-6-1-sol", disabled: false, onSelect };
+    const props = { options, currentModel: "databricks-gpt-6-2-sol", disabled: false, onSelect };
     const { rerender } = render(<CodexModelChoice {...props} />);
-    const med = screen.getByRole("button", { name: "Med: GPT-6.1 Sol" });
-    const hi = screen.getByRole("button", { name: "Hi: GPT-6 Astra" });
+    const med = screen.getByRole("button", { name: "Med: GPT-6.2 Sol" });
+    const hi = screen.getByRole("button", { name: "Hi: GPT-6.2 Astra" });
     expect(med).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(med);
     expect(onSelect).not.toHaveBeenCalled();
     fireEvent.click(hi);
     expect(onSelect).toHaveBeenCalledWith("astra");
     expect(hi).toHaveAttribute("aria-pressed", "false");
-    rerender(<CodexModelChoice {...props} currentModel="gpt-6-astra" />);
+    rerender(<CodexModelChoice {...props} currentModel="gpt-6.2-astra" />);
     expect(hi).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(med);
     expect(onSelect).toHaveBeenLastCalledWith("sol");
@@ -35,10 +35,10 @@ describe("CodexModelChoice", () => {
     [
       [],
       [options[0]],
-      [...options, { id: "gpt-6.1-sol" }],
-      [...options, { id: "other-astra", model: "gpt-6-astra" }],
-      [{ id: "gpt-6.1-sol", model: "gpt-6-astra" }],
-      [{ id: "unknown", displayName: "GPT-6.1 Sol" }, options[1]],
+      [...options, { id: "gpt-6.2-sol" }],
+      [...options, { id: "other-astra", model: "gpt-6.2-astra" }],
+      [{ id: "gpt-6.2-sol", model: "gpt-6.2-astra" }],
+      [{ id: "unknown", displayName: "GPT-6.2 Sol" }, options[1]],
     ].map((catalog) => ({ catalog })),
   )("hides missing or ambiguous mappings: $catalog", ({ catalog }) => {
     render(

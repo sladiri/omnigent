@@ -3,8 +3,8 @@ import { findNativeModelOption } from "@/lib/codexNativeModels";
 import type { NativeModelOption } from "@/lib/types";
 
 const MODEL_CHOICES = [
-  { label: "Med", model: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
-  { label: "Hi", model: "gpt-6-astra", name: "GPT-6 Astra" },
+  { label: "Med", model: "gpt-6.2-sol", name: "GPT-6.2 Sol" },
+  { label: "Hi", model: "gpt-6.2-astra", name: "GPT-6.2 Astra" },
 ] as const;
 
 /** Direct model choices, shown only when the session catalog resolves each uniquely. */
