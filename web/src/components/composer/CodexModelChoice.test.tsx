@@ -7,6 +7,7 @@ afterEach(cleanup);
 const options = [
   { id: "sol", model: "system.ai.gpt-6-2-sol" },
   { id: "astra", model: "gpt-6.2-astra" },
+  { id: "terra", model: "system.ai.gpt-6-1-terra" },
 ];
 
 describe("CodexModelChoice", () => {
@@ -16,6 +17,8 @@ describe("CodexModelChoice", () => {
     const { rerender } = render(<CodexModelChoice {...props} />);
     const med = screen.getByRole("button", { name: "Med: GPT-6.2 Sol" });
     const hi = screen.getByRole("button", { name: "Hi: GPT-6.2 Astra" });
+    const lo = screen.getByRole("button", { name: "Lo: GPT-6.1 Terra" });
+    expect(screen.getAllByRole("button")).toEqual([lo, med, hi]);
     expect(med).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(med);
     expect(onSelect).not.toHaveBeenCalled();
@@ -26,6 +29,10 @@ describe("CodexModelChoice", () => {
     expect(hi).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(med);
     expect(onSelect).toHaveBeenLastCalledWith("sol");
+    fireEvent.click(lo);
+    expect(onSelect).toHaveBeenLastCalledWith("terra");
+    rerender(<CodexModelChoice {...props} currentModel="gpt-6.1-terra" />);
+    expect(lo).toHaveAttribute("aria-pressed", "true");
     rerender(<CodexModelChoice {...props} currentModel="gpt-6-luna" />);
     expect(med).toHaveAttribute("aria-pressed", "false");
     expect(hi).toHaveAttribute("aria-pressed", "false");
@@ -35,6 +42,7 @@ describe("CodexModelChoice", () => {
     [
       [],
       [options[0]],
+      options.slice(0, 2),
       [...options, { id: "gpt-6.2-sol" }],
       [...options, { id: "other-astra", model: "gpt-6.2-astra" }],
       [{ id: "gpt-6.2-sol", model: "gpt-6.2-astra" }],
