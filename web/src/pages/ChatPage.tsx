@@ -45,7 +45,7 @@ import {
 } from "@/components/composer/ChatComposer";
 import { ComposerMentionChips } from "@/components/composer/ComposerMentionChips";
 import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
-import { CodexModelChoice } from "@/components/composer/CodexModelChoice";
+import { QuickModelChoice } from "@/components/composer/QuickModelChoice";
 import { BackgroundTaskIndicator } from "@/components/composer/BackgroundTaskIndicator";
 import { SubagentTaskIndicator } from "@/components/composer/SubagentTaskIndicator";
 import { subAgentComposerLabel } from "@/shell/subagentLabel";
@@ -5449,8 +5449,9 @@ function SessionHarnessPicker({
   return (
     <div className="flex min-w-0 items-center gap-2">
       {picker}
-      {showModels && modelPickerKind === "codex" && (
-        <CodexModelChoice
+      {showModels && (modelPickerKind === "codex" || modelPickerKind === "claude") && (
+        <QuickModelChoice
+          kind={modelPickerKind}
           options={codexModelOptions}
           currentModel={routingOn ? null : effectiveModel}
           disabled={disabled || busy || pendingModelChange !== null || !!inferenceError}

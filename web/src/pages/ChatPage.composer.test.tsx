@@ -7092,10 +7092,46 @@ describe("Composer config gear", () => {
       expect(hi).toBeEnabled();
     });
 
-    it.each(["claude", null] as const)("hides for picker kind %s", (modelPickerKind) => {
-      renderWithTooltips(<Composer {...props()} modelPickerKind={modelPickerKind} />);
-      expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+    it("switches the quick Claude model choice and waits for the runner report", async () => {
+      const previous = useChatStore.getState();
+      onTestFinished(() => useChatStore.setState(previous, true));
+      const setModel = vi.fn().mockImplementation(async (model: string) => {
+        useChatStore.setState({ sessionModelOverride: model, pendingModelChange: model });
+      });
+      useChatStore.setState({ llmModel: "claude-sonnet-5", setModel });
+      renderWithTooltips(
+        <Composer
+          {...props()}
+          modelPickerKind="claude"
+          codexModelOptions={[
+            { id: "sonnet", model: "system.ai.claude-sonnet-5" },
+            { id: "opus", model: "system.ai.claude-opus-5[1m]" },
+            { id: "fable", model: "system.ai.claude-fable-5-1" },
+          ]}
+        />,
+      );
+      const choice = within(screen.getByRole("group", { name: "Claude model choice" }));
+      const lo = choice.getByRole("button", { name: "Lo: Sonnet" });
+      const med = choice.getByRole("button", { name: "Med: Opus" });
+      const hi = choice.getByRole("button", { name: "Hi: Fable" });
+      expect(choice.getAllByRole("button")).toEqual([lo, med, hi]);
+      expect(lo).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(med);
+      await waitFor(() => expect(med).toBeDisabled());
+      expect(setModel).toHaveBeenCalledExactlyOnceWith("opus", { expectConfirmation: true });
+      expect(med).toHaveAttribute("aria-pressed", "false");
+      act(() => useChatStore.setState({ llmModel: "claude-opus-5[1m]", pendingModelChange: null }));
+      expect(med).toHaveAttribute("aria-pressed", "true");
+      expect(med).toBeEnabled();
     });
+
+    it.each(["claude", null] as const)(
+      "hides Codex choices for picker kind %s",
+      (modelPickerKind) => {
+        renderWithTooltips(<Composer {...props()} modelPickerKind={modelPickerKind} />);
+        expect(screen.queryByRole("group", { name: "Codex model choice" })).toBeNull();
+      },
+    );
 
     it("disables changes for read-only sessions", () => {
       renderWithTooltips(<Composer {...props()} readOnlyReason="Read only" />);

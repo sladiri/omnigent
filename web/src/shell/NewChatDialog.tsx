@@ -1,4 +1,4 @@
-import { CodexModelChoice } from "@/components/composer/CodexModelChoice";
+import { QuickModelChoice } from "@/components/composer/QuickModelChoice";
 import { useLoadedConversations } from "@/hooks/useSidebarData";
 import { useComposerContext } from "@/hooks/useComposerContext";
 import { useSlashCompletion } from "@/hooks/useSlashCompletion";
@@ -7457,8 +7457,10 @@ export function NewChatLandingScreen() {
                         />
                       </div>
                     </MobileHeaderControlPortal>
-                    {selectedNativeHarness === "codex-native" && (
-                      <CodexModelChoice
+                    {(selectedNativeHarness === "codex-native" ||
+                      selectedNativeHarness === "claude-native") && (
+                      <QuickModelChoice
+                        kind={selectedNativeHarness === "claude-native" ? "claude" : "codex"}
                         options={pickerModelOptions}
                         currentModel={
                           routingOn
