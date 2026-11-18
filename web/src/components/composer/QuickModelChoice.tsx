@@ -32,7 +32,17 @@ export function QuickModelChoice({
   const choices = presets
     .map((choice) => ({
       ...choice,
-      matches: options.filter((option) => findNativeModelOption([option], choice.model) !== null),
+      matches: options.filter(
+        (option) =>
+          findNativeModelOption([option], choice.model) !== null ||
+          // Claude can advertise a versioned picker ID instead of a family alias.
+          (kind === "claude" &&
+            [option.id, option.model].some((model) =>
+              new RegExp(`^(?:system\\.ai\\.|databricks-)?claude-${choice.model}-\\d`).test(
+                model ?? "",
+              ),
+            )),
+      ),
     }))
     .filter((choice) => choice.matches.length === 1);
   if (choices.length === 0 || (kind === "codex" && choices.length !== presets.length)) return null;
