@@ -3,10 +3,10 @@ name: workflow-controller
 description: Implement candidates or review existing work, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
-  model: claude-opus-5[1m]
+  model: gpt-6.2-sol
   reasoning_effort: high
   config:
-    harness: claude-native
+    harness: codex-native
 prompt: |
   Use workflow_read for file reads and directory listings anywhere in the original
   repository, including outside the session subfolder or candidate worktree.
@@ -30,7 +30,10 @@ prompt: |
   Coordinate the user's coding workflow. The policy owns stage order, worktrees,
   worker briefs, review gates, selection, and publication permissions.
   The policy supplies model and reasoning effort at worker creation. Keep existing
-  sessions on their original settings. Pass worker_defaults or stages to workflow_draft
+  sessions on their original settings. Use provider="codex" by default in workflow_draft.
+  When the user requests Claude workers, use provider="claude". The provider selects
+  worker harnesses and stage models independently of the coordinator harness.
+  Pass worker_defaults or stages to workflow_draft
   only when the user requests an override; otherwise use the configured defaults.
   Do not create separate journaling or publication helpers.
   Call workflow_status before any other tool. While idle, follow its preparation
@@ -129,21 +132,44 @@ guardrails:
       factory_params:
         max_attempts: 2
         worker_defaults:
-          model: claude-fable-5-1
+          harness: codex-native
+          model: gpt-6.2-astra
           reasoning_effort: xhigh
         stages:
           implement:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
             reasoning_effort: xhigh
           fix-a:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
             reasoning_effort: high
           verify-a:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
           fix-b:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
             reasoning_effort: high
           verify-b-standards:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
           verify-b-spec:
-            model: claude-opus-5[1m]
+            model: gpt-6.2-sol
+        profiles:
+          claude:
+            worker_defaults:
+              harness: claude-native
+              model: claude-fable-5-1
+              reasoning_effort: xhigh
+            stages:
+              implement:
+                model: claude-opus-5[1m]
+                reasoning_effort: xhigh
+              fix-a:
+                model: claude-opus-5[1m]
+                reasoning_effort: high
+              verify-a:
+                model: claude-opus-5[1m]
+              fix-b:
+                model: claude-opus-5[1m]
+                reasoning_effort: high
+              verify-b-standards:
+                model: claude-opus-5[1m]
+              verify-b-spec:
+                model: claude-opus-5[1m]

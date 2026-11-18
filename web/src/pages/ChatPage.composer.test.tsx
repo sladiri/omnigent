@@ -8127,7 +8127,7 @@ describe("workflow prompt visibility", () => {
     fireEvent.change(textarea(), {
       target: {
         value:
-          "Prepare the start message for `review-fix` using the task below.\n\nPrepare the start message for `implement-review-fix` using the task below.\n\nMy task",
+          'Prepare the start message for `review-fix` using the task below.\n\nPrepare the start message for `implement-review-fix` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task',
       },
     });
     for (const workflow of ["implement", "compare", "review"]) {
@@ -8138,7 +8138,7 @@ describe("workflow prompt visibility", () => {
         "true",
       );
       expect(textarea()).toHaveValue(
-        `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
+        `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task`,
       );
       expect(textarea()).toHaveFocus();
     }

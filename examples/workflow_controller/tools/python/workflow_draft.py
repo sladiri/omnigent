@@ -18,6 +18,7 @@ def workflow_draft(
     stages: dict[str, dict[str, str]] | None = None,
     repositories: list[dict] | None = None,
     evidence_files: list[str] | None = None,
+    provider: str = "codex",
 ) -> str:
     """Validate a start message; never starts workers or modifies files.
 
@@ -28,7 +29,8 @@ def workflow_draft(
     base: intended PR target branch; ask when unknown.
     branch: exact requested candidate branch for Implement or Review; empty for default.
     publish: false unless the user explicitly authorizes commit, push and PR.
-    worker_defaults: optional model and reasoning_effort for new workers.
+    provider: codex or claude worker profile; independent of the coordinator.
+    worker_defaults: optional harness, model and reasoning_effort for new workers.
     stages: optional overrides keyed by exact workflow stage name.
     repositories: assignments {id, repository, baseline, base}; optional branch/workspace.
     evidence_files: absolute paths to external files needed by the task; read-only.
@@ -46,4 +48,5 @@ def workflow_draft(
         stages,
         repositories,
         evidence_files,
+        provider,
     )

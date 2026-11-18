@@ -8,6 +8,7 @@ import { COMPOSER_CONTENT_INSET_CLASS } from "@/components/composer/ChatComposer
 interface PreparedDraft {
   token: string;
   workflow: string;
+  provider?: "codex" | "claude";
   repository: string;
   task: string;
   baseline: string;
@@ -64,6 +65,7 @@ export function WorkflowStartButton({
         <p>
           {draft.workflow} · {draft.repository}
         </p>
+        <p>Worker provider: {draft.provider === "claude" ? "Claude" : "Codex"}</p>
         <p>
           Baseline: {draft.baseline} · Target: {draft.base}
         </p>

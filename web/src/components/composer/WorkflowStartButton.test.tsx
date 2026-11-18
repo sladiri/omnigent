@@ -7,46 +7,53 @@ import { authenticatedFetch } from "@/lib/identity";
 vi.mock("@/lib/identity", () => ({ authenticatedFetch: vi.fn() }));
 afterEach(cleanup);
 
-it("shows server-validated details and sends only the selected draft token", async () => {
-  const draft = {
-    token: "first",
-    workflow: "implement-review-fix",
-    repository: "/repo",
-    task: "Task",
-    baseline: "main",
-    base: "main",
-    branch: "feature/lcs-1670",
-    publish: false,
-    evidence_files: ["/support/report.md", "/support/cases.csv"],
-  };
-  vi.mocked(authenticatedFetch).mockImplementation(
-    async () => new Response(JSON.stringify({ draft })),
-  );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const send = vi.fn();
-  const view = (disabled: boolean) => (
-    <QueryClientProvider client={client}>
-      <WorkflowStartButton sessionId="session" disabled={disabled} onStart={send} />
-    </QueryClientProvider>
-  );
-  const rendered = render(view(true));
-  const button = await screen.findByRole("button", { name: "Start workflow" });
-  expect(button).toBeDisabled();
-  fireEvent.click(button);
-  expect(send).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText("Review prepared workflow"));
-  expect(screen.getByText(/feature\/lcs-1670/)).toBeVisible();
-  expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/report.md");
-  expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/cases.csv");
-  rendered.rerender(view(false));
-  fireEvent.click(button);
-  expect(send).toHaveBeenCalledWith("/workflow start-draft first");
-  draft.token = "second";
-  await client.invalidateQueries({ queryKey: ["workflow-draft", "session"] });
-  fireEvent.click(await screen.findByRole("button", { name: "Start workflow" }));
-  expect(send).toHaveBeenLastCalledWith("/workflow start-draft second");
-  client.clear();
-});
+it.each([undefined, "codex", "claude"])(
+  "shows the validated %s provider and sends only the selected draft token",
+  async (provider) => {
+    const draft = {
+      token: "first",
+      workflow: "implement-review-fix",
+      provider,
+      repository: "/repo",
+      task: "Task",
+      baseline: "main",
+      base: "main",
+      branch: "feature/lcs-1670",
+      publish: false,
+      evidence_files: ["/support/report.md", "/support/cases.csv"],
+    };
+    vi.mocked(authenticatedFetch).mockImplementation(
+      async () => new Response(JSON.stringify({ draft })),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const send = vi.fn();
+    const view = (disabled: boolean) => (
+      <QueryClientProvider client={client}>
+        <WorkflowStartButton sessionId="session" disabled={disabled} onStart={send} />
+      </QueryClientProvider>
+    );
+    const rendered = render(view(true));
+    const button = await screen.findByRole("button", { name: "Start workflow" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Review prepared workflow"));
+    expect(
+      screen.getByText(`Worker provider: ${provider === "claude" ? "Claude" : "Codex"}`),
+    ).toBeVisible();
+    expect(screen.getByText(/feature\/lcs-1670/)).toBeVisible();
+    expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/report.md");
+    expect(screen.getByText(/Read-only evidence files:/)).toHaveTextContent("/support/cases.csv");
+    rendered.rerender(view(false));
+    fireEvent.click(button);
+    expect(send).toHaveBeenCalledWith("/workflow start-draft first");
+    draft.token = "second";
+    await client.invalidateQueries({ queryKey: ["workflow-draft", "session"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Start workflow" }));
+    expect(send).toHaveBeenLastCalledWith("/workflow start-draft second");
+    client.clear();
+  },
+);
 
 it("does not offer a start action without a saved draft", async () => {
   vi.mocked(authenticatedFetch).mockResolvedValue(new Response(JSON.stringify({ draft: null })));

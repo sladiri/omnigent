@@ -4,7 +4,8 @@ description: Implement, review, or fix only the assigned candidate stage.
 executor:
   type: omnigent
   config:
-    harness: claude-native
+    harness: codex-native
+    allowed_harnesses: [codex-native, claude-native]
 os_env:
   type: caller_process
   cwd: .
@@ -90,12 +91,13 @@ prompt: |
   Never initialize a journal or use it to approve or advance workflow stages.
   First call workflow_stage to obtain the complete brief. For exploration and
   result comparison, follow its read-only contract and do not create a goal.
-  For implementation, review, and fix stages, the controller starts a native goal
-  to produce the stage report. That goal covers the report only.
+  Codex implementation, review, and fix dispatches start a native report goal.
+  Claude dispatches use the same stage contract without a native goal.
+  If a report goal is present, it covers this stage report only.
   Continue working across turns until you can report the stage outcome. If a user
-  decision or external blocker prevents progress, finish the report goal and
+  decision or external blocker prevents progress, finish any active report goal and
   return NEEDS_INPUT or BLOCKED. The controller will wait or arrange a fresh retry.
-  Do not create another goal, extend this goal to other stages, or invent answers.
+  Do not create a goal, extend an active goal to other stages, or invent answers.
 
   Perform only the assigned stage in the candidate worktrees supplied by the
   controller, including additional repositories. Verify each path and branch with

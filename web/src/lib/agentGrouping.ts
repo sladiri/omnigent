@@ -5,7 +5,7 @@
  * two surfaces group and order agents identically.
  */
 import type { AvailableAgent } from "@/hooks/useAvailableAgents";
-import { isNativeCodingAgent, nativeAgentSortRank } from "@/lib/nativeCodingAgents";
+import { isNativeHarnessAgent, nativeAgentSortRank } from "@/lib/nativeCodingAgents";
 
 // Built-in agents (by name slug) — the long-lived agents the server ships
 // out of the box. Pickers group these first, then a divider, then custom
@@ -152,7 +152,7 @@ export function partitionPickerEntries<T extends AvailableAgent>(
   agents: readonly T[],
 ): { harnesses: T[]; agents: T[] } {
   const harnessBacked = (a: T): boolean =>
-    !a.mine && (isNativeCodingAgent(a) || isAcpHarnessAgent(a));
+    isNativeHarnessAgent(a) || (!a.mine && a.builtin !== false && isAcpHarnessAgent(a));
   return {
     harnesses: agents.filter(harnessBacked),
     agents: agents.filter((a) => !harnessBacked(a)),

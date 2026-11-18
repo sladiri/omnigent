@@ -8,6 +8,7 @@ import { capitalizeAgentName, useAcpHarnessIds, useHarnessLabels } from "@/lib/a
 import {
   nativeCodingAgentForAvailableAgent,
   type NativeCodingAgentSpec,
+  isNativeHarnessAgent,
 } from "@/lib/nativeCodingAgents";
 import type { SkillSummary } from "@/lib/types";
 
@@ -89,7 +90,7 @@ function nativeWrapperSlot(
 ): NativeCodingAgentSpec | undefined {
   const stock = stockNativeAgent(agent);
   if (stock !== undefined) return stock;
-  if (agent.builtin !== undefined) return undefined;
+  if (agent.builtin !== undefined || !isNativeHarnessAgent(agent)) return undefined;
   return nativeCodingAgentForAvailableAgent(agent);
 }
 
@@ -187,7 +188,7 @@ function agentFromWire(a: BuiltinAgentWire): AvailableAgent {
   return {
     id: a.id,
     name: a.name,
-    display_name: displayNameForAgent(a.name, a.harness),
+    display_name: displayNameForAgent(a.name, a.builtin === false ? null : a.harness),
     description: a.description ?? null,
     harness: a.harness ?? null,
     skills: a.skills ?? [],
@@ -302,7 +303,7 @@ export async function prefetchAvailableAgentDetails(
           ? a
           : {
               ...a,
-              display_name: displayNameForAgent(json.name, json.harness),
+              display_name: displayNameForAgent(json.name),
               description: json.description ?? null,
               harness: json.harness ?? null,
               skills: json.skills ?? [],

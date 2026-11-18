@@ -43,6 +43,7 @@ POLICY_REGISTRY = [
                 "max_attempts": {"type": "integer", "minimum": 1, "default": 2},
                 "worker_defaults": {"type": "object"},
                 "stages": {"type": "object"},
+                "profiles": {"type": "object"},
             },
             "additionalProperties": False,
         },
@@ -283,14 +284,29 @@ def _block(state: Json, question: str) -> PolicyResponse:
 
 
 def _execution_settings(
-    definition: Json, worker_defaults: Json | None = None, stages: Json | None = None
+    definition: Json,
+    worker_defaults: Json | None = None,
+    stages: Json | None = None,
+    profiles: Json | None = None,
 ) -> Json:
     """Validate and freeze bundle defaults plus per-run stage overrides."""
 
+    provider = definition.get("provider", "codex")
+    if provider not in ("codex", "claude"):
+        raise ValueError("Workflow provider must be codex or claude")
+    if profiles:
+        profile = profiles.get(provider, {} if provider == "codex" else None)
+        if not isinstance(profile, dict):
+            raise ValueError(f"No workflow profile configured for {provider}")
+        worker_defaults = profile.get("worker_defaults", worker_defaults)
+        stages = profile.get("stages", stages)
+
     def settings(value: object) -> Json:
-        if not isinstance(value, dict) or set(value) - {"model", "reasoning_effort"}:
-            raise ValueError("Worker settings allow only model and reasoning_effort")
+        if not isinstance(value, dict) or set(value) - {"model", "reasoning_effort", "harness"}:
+            raise ValueError("Worker settings allow only harness, model and reasoning_effort")
         result = dict(value)
+        if "harness" in result and result["harness"] not in ("codex-native", "claude-native"):
+            raise ValueError("Workflow harness must be codex-native or claude-native")
         if "model" in result:
             if not isinstance(result["model"], str):
                 raise ValueError("Worker model must be a string")
@@ -319,7 +335,11 @@ def _execution_settings(
 
 
 def _definition(
-    raw: str, conversation_id: str, worker_defaults: Json | None = None, stages: Json | None = None
+    raw: str,
+    conversation_id: str,
+    worker_defaults: Json | None = None,
+    stages: Json | None = None,
+    profiles: Json | None = None,
 ) -> Json:
     definition = json.loads(raw)
     if not isinstance(definition, dict):
@@ -364,7 +384,7 @@ def _definition(
     from omnigent.workflows.operations import validate_repositories
 
     validate_repositories(definition)
-    definition.update(_execution_settings(definition, worker_defaults, stages))
+    definition.update(_execution_settings(definition, worker_defaults, stages, profiles))
     definition["run_id"] = conversation_id
     definition.setdefault("remote", "origin")
     return definition
@@ -382,6 +402,7 @@ def draft_start_message(
     stages: dict[str, dict[str, str]] | None = None,
     repositories: list[Json] | None = None,
     evidence_files: list[str] | None = None,
+    provider: str = "codex",
 ) -> str:
     """Validate a proposed start command without starting work or changing state."""
     try:
@@ -391,6 +412,7 @@ def draft_start_message(
             json.dumps(
                 {
                     "workflow": workflow,
+                    "provider": provider,
                     "repository": repository,
                     "task": task,
                     "baseline": baseline,
@@ -476,6 +498,7 @@ def draft_preview(session_state: Json) -> Json:
                 for key in ("workflow", "repository", "task", "baseline", "base")
             },
             "branch": next((c.get("branch") for c in definition["candidates"]), None),
+            "provider": definition.get("provider", "codex"),
             "publish": definition.get("publish", False),
             "repositories": definition.get("repositories", []),
             "evidence_files": definition.get("evidence_files", []),
@@ -1811,7 +1834,7 @@ def _coding_controller(
                     resolved = _execution_settings(
                         {
                             key: args[key]
-                            for key in ("worker_defaults", "stages")
+                            for key in ("worker_defaults", "stages", "provider")
                             if args.get(key) is not None
                         },
                         **execution,
@@ -1984,6 +2007,11 @@ def _coding_controller(
                             f"Stage: {current}\n"
                             "Read workflow_stage and return its report. Do not create a goal."
                             if current in comparison.ANALYSIS_STAGES
+                            or {
+                                **state["definition"].get("worker_defaults", {}),
+                                **state["definition"].get("stages", {}).get(stage, {}),
+                            }.get("harness")
+                            == "claude-native"
                             else f"/goal Stage: {current}\n"
                             "Produce the final report for your assigned workflow stage. "
                             "First call workflow_stage for the complete task, worktree, checks, "
@@ -2277,7 +2305,10 @@ def _coding_controller(
 
 
 def make_controller(
-    max_attempts: int = 2, worker_defaults: Json | None = None, stages: Json | None = None
+    max_attempts: int = 2,
+    worker_defaults: Json | None = None,
+    stages: Json | None = None,
+    profiles: Json | None = None,
 ) -> Callable[[PolicyEvent], PolicyResponse]:
     """Build the persisted coding workflow controller."""
     if type(max_attempts) is not int or max_attempts < 1:
@@ -2286,6 +2317,9 @@ def make_controller(
     active_stages = {
         key: value for key, value in (stages or {}).items() if key not in _RETIRED_STAGES
     }
-    return _coding_controller(
-        max_attempts, _execution_settings({}, worker_defaults, active_stages)
-    )
+    execution = _execution_settings({}, worker_defaults, active_stages)
+    if profiles is not None:
+        for provider in profiles:
+            _execution_settings({"provider": provider}, profiles=profiles)
+        execution["profiles"] = profiles
+    return _coding_controller(max_attempts, execution)

@@ -10390,16 +10390,27 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
     );
   });
 
-  it.each([false, true])(
-    "selects the controller and exposes usable workflow buttons (mobile=%s)",
-    async (mobile) => {
+  it.each([
+    { mobile: false, harness: "codex-native", model: "GPT-5.5" },
+    { mobile: true, harness: "codex-native", model: "GPT-5.5" },
+    { mobile: false, harness: "claude-native", model: "Opus 4.8" },
+    { mobile: true, harness: "claude-native", model: "Opus 4.8" },
+  ])(
+    "selects the controller and exposes usable workflow buttons ($harness, mobile=$mobile)",
+    async ({ mobile, harness, model }) => {
       if (mobile) onTestFinished(forceMobileViewport());
+      mockClaudeModels(
+        CLAUDE_MODEL_OPTIONS_RESULT.data.map((option) => ({
+          ...option,
+          isDefault: option.id === "opus",
+        })),
+      );
       mockAgents([
         ...DEFAULT_LANDING_AGENTS,
         testAgent("ag_workflow", "workflow-controller", {
           display_name: "Workflow-controller",
-          harness: "codex-native",
-          mine: true,
+          harness,
+          builtin: false,
         }),
       ]);
       authenticatedFetchMock.mockResolvedValue({
@@ -10425,7 +10436,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
           "true",
         );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nMy task`,
+          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task`,
         );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
       }
@@ -10435,7 +10446,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
       expect(screen.queryByRole("button", { name: "review" })).toBeNull();
       expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-        "Prepare the start message for `review-fix` using the task below.\n\nMy task",
+        'Prepare the start message for `review-fix` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task',
       );
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
@@ -10448,10 +10459,89 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       );
       remountLanding();
       expect(screen.getByTestId("new-chat-landing-agent-select")).toHaveTextContent(
-        "Workflow-controller · GPT-5.5",
+        `Workflow-controller · ${model}`,
       );
       const { body } = await submitAndReadBody();
       expect(body.agent_id).toBe("ag_workflow");
+    },
+  );
+
+  it.each([
+    { harness: "claude-native", model: "sonnet", expectedModel: "sonnet" },
+    {
+      harness: "claude-native",
+      model: null,
+      expectedModel: "system.ai.claude-opus-4-8[1m]",
+    },
+    { harness: "codex-native", model: "databricks-gpt-5-5", expectedModel: "databricks-gpt-5-5" },
+  ])(
+    "creates a workflow coordinator on $harness with model $model and its original agent ID",
+    async ({ harness, model, expectedModel }) => {
+      mockClaudeModels(
+        CLAUDE_MODEL_OPTIONS_RESULT.data.map((option) => ({
+          ...option,
+          isDefault: option.id === "opus",
+        })),
+      );
+      mockHosts([
+        {
+          ...host("online"),
+          configured_harnesses: {
+            "claude-native": harness === "claude-native",
+            "codex-native": harness === "codex-native",
+          },
+        },
+      ]);
+      mockAgents([
+        ...DEFAULT_LANDING_AGENTS,
+        testAgent("ag_workflow", "workflow-controller", {
+          display_name: "Workflow-controller",
+          harness: harness === "claude-native" ? "codex-native" : "claude-native",
+          builtin: false,
+        }),
+      ]);
+      authenticatedFetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: "conv_workflow" }),
+      } as Response);
+      renderLanding();
+      openPicker();
+      fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+      fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
+      fireEvent.change(screen.getByRole("combobox", { name: "Coordinator" }), {
+        target: { value: harness },
+      });
+      expect(screen.getByRole("combobox", { name: "Worker provider" })).toHaveValue("codex");
+      fireEvent.change(screen.getByRole("combobox", { name: "Worker provider" }), {
+        target: { value: "claude" },
+      });
+      expect(screen.getByRole("combobox", { name: "Coordinator" })).toHaveValue(harness);
+      if (model !== null) {
+        openPicker();
+        fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+        clickAgentConfig("ag_workflow");
+        fireEvent.click(screen.getByTestId(`new-chat-landing-agent-model-${model}`));
+        closeMenu();
+      }
+      fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+        target: { value: "My task" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "implement" }));
+      expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
+        'Prepare the start message for `implement-review-fix` using the task below.\n\nUse workflow_draft provider="claude".\n\nMy task',
+      );
+      fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
+      const { body } = await readCreateBody();
+      expect(body).toMatchObject({
+        agent_id: "ag_workflow",
+        harness_override: harness,
+        model_override: expectedModel,
+        labels: {
+          "omnigent.ui": "terminal",
+          "omnigent.wrapper":
+            harness === "claude-native" ? "claude-code-native-ui" : "codex-native-ui",
+        },
+      });
     },
   );
 

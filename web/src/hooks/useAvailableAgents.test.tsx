@@ -98,6 +98,29 @@ function sessionResponse(
 const EMPTY_MINE = mockResponse({ object: "list", data: [], has_more: false });
 
 describe("useAvailableAgents", () => {
+  it.each(["claude-native", "codex-native"])(
+    "keeps a custom workflow controller's name on %s",
+    async (harness) => {
+      routeFetch({
+        [BUILTINS_URL]: mockResponse({
+          data: [
+            { id: "native", name: `${harness}-ui`, harness, builtin: true },
+            { id: "controller", name: "workflow-controller", harness, builtin: false },
+          ],
+        }),
+        [MINE_URL]: EMPTY_MINE,
+      });
+      const { result } = renderHook(() => useAvailableAgents(), { wrapper });
+      await waitFor(() =>
+        expect(result.current.data?.find((a) => a.id === "controller")).toMatchObject({
+          name: "workflow-controller",
+          display_name: "Workflow-controller",
+          harness,
+        }),
+      );
+    },
+  );
+
   it("does not fetch while disabled", async () => {
     const { result } = renderHook(() => useAvailableAgents({ enabled: false }), { wrapper });
     await Promise.resolve();
@@ -1006,6 +1029,30 @@ describe("useAvailableAgents", () => {
 });
 
 describe("prefetchAvailableAgentDetails", () => {
+  it.each(["claude-native", "codex-native"])(
+    "keeps the workflow controller after enrichment reveals %s",
+    async (harness) => {
+      const queryClient = new QueryClient();
+      const native = testAgent("native", `${harness}-ui`, { harness, builtin: true });
+      const controller = testAgent("controller", "workflow-controller", {
+        display_name: "Workflow-controller",
+        sessionId: "controller-session",
+      });
+      queryClient.setQueryData(["available-agents"], [native, controller]);
+      fetchMock.mockResolvedValueOnce(
+        mockResponse({ id: controller.id, name: controller.name, harness }),
+      );
+
+      await prefetchAvailableAgentDetails(controller, queryClient);
+
+      expect(queryClient.getQueryData(["available-agents"])).toEqual([
+        native,
+        { ...controller, harness },
+      ]);
+      queryClient.clear();
+    },
+  );
+
   it("patches harness, description, and skills into the cache on success", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const agent = testAgent("ag_doc", "doc-writer", {
