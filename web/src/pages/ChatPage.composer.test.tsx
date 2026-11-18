@@ -6854,6 +6854,7 @@ describe("Composer config gear", () => {
   );
   describe("quick Codex model choice", () => {
     const options = [
+      { id: "gpt-6.1-terra", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
       { id: "gpt-6.2-sol", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] },
       { id: "gpt-6.2-astra", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
     ];

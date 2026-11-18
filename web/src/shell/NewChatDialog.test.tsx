@@ -6684,6 +6684,7 @@ describe("NewChatLandingScreen", () => {
 
   it("uses the quick Codex model choice for the first message", async () => {
     const options = [
+      { id: "databricks-gpt-6-1-terra", displayName: "GPT-6.1 Terra" },
       { id: "databricks-gpt-6-2-sol", displayName: "GPT-6.2 Sol", isDefault: true },
       { id: "databricks-gpt-6-2-astra", displayName: "GPT-6.2 Astra" },
     ];
@@ -6701,6 +6702,7 @@ describe("NewChatLandingScreen", () => {
     selectAgent("a2");
     const hi = await screen.findByRole("button", { name: "Hi: GPT-6.2 Astra" });
     await waitFor(() => expect(hi).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Lo: GPT-6.1 Terra" }));
     fireEvent.click(hi);
     expect(hi).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Med: GPT-6.2 Sol" }));
