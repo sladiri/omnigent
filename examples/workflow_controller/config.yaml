@@ -3,7 +3,7 @@ name: workflow-controller
 description: Implement candidates or review existing work, enforce review gates, and publish only the selected result.
 executor:
   type: omnigent
-  model: gpt-6.1-sol
+  model: gpt-6.2-sol
   reasoning_effort: high
   config:
     harness: codex-native
@@ -129,15 +129,15 @@ guardrails:
       factory_params:
         max_attempts: 2
         worker_defaults:
-          model: gpt-6-astra
+          model: gpt-6.2-astra
           reasoning_effort: xhigh
         stages:
           implement:
-            model: gpt-6.1-sol
+            model: gpt-6.2-sol
             reasoning_effort: xhigh
           fix-a:
-            model: gpt-6.1-sol
+            model: gpt-6.2-sol
             reasoning_effort: high
           fix-b:
-            model: gpt-6.1-sol
+            model: gpt-6.2-sol
             reasoning_effort: high
