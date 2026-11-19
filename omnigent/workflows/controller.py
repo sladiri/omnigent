@@ -65,6 +65,8 @@ READ_TOOLS = {
     "sys_session_list",
     "sys_session_get_info",
     "sys_session_get_history",
+    # Claude Code loads deferred MCP tool schemas through ToolSearch.
+    "ToolSearch",
 }
 LINEAR_READ_OPERATIONS = {
     "get_agent_context",
@@ -2173,7 +2175,10 @@ def _coding_controller(
             )
             return _result(state, data=presentation)
         if target == "workflow_reconcile":
-            return _reconcile(state, session_id)
+            # Blocked outcomes carry no data; the stub's placeholder must not reach the model.
+            response = _reconcile(state, session_id)
+            response.setdefault("data", json.dumps(_visible_state(state)))
+            return response
         result = _decode(event)
         if target == "workflow_prepare" and state.get("repository_preparation"):
             if state["status"] not in {"blocked", "waiting-user"} or _pending(state):
