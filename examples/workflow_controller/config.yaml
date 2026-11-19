@@ -155,7 +155,7 @@ guardrails:
           claude:
             worker_defaults:
               harness: claude-native
-              model: claude-fable-5-1
+              model: claude-fable-5-2[1m]
               reasoning_effort: xhigh
             stages:
               implement:

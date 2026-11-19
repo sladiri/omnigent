@@ -1468,7 +1468,7 @@ async def test_stage_model_and_effort_are_enforced_only_for_new_workers(coding, 
     dispatch = await coding.dispatch()
     uses_opus = stage == "implement" or stage.startswith(("fix-", "verify-"))
     expected_model = (
-        ("claude-opus-5[1m]" if uses_opus else "claude-fable-5-1")
+        ("claude-opus-5[1m]" if uses_opus else "claude-fable-5-2[1m]")
         if provider == "claude"
         else ("gpt-6.2-sol" if uses_opus else "gpt-6.2-astra")
     )
@@ -1539,7 +1539,7 @@ async def test_draft_stage_settings_survive_approval_and_policy_reload(coding):
     assert dispatch["args"]["model"] == "claude-opus-5[1m]"
     assert dispatch["args"]["reasoning_effort"] == "high"
     assert coding.state["definition"]["worker_defaults"] == {
-        "model": "claude-fable-5-1",
+        "model": "claude-fable-5-2[1m]",
         "harness": "claude-native",
         "reasoning_effort": "medium",
     }

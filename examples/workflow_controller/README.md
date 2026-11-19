@@ -134,7 +134,7 @@ run Claude workers, and a Claude coordinator can run Codex workers.
 | Profile | Worker harness | Implement / fix / verify | Explore / compare / review |
 | --- | --- | --- | --- |
 | Codex | `codex-native` | `gpt-6.2-sol` | `gpt-6.2-astra` |
-| Claude | `claude-native` | `claude-opus-5[1m]` | `claude-fable-5-1` |
+| Claude | `claude-native` | `claude-opus-5[1m]` | `claude-fable-5-2[1m]` |
 
 Fix stages use high effort. Other worker stages use xhigh effort.
 The controller defaults to Sol at high effort. Configure access to the chosen
