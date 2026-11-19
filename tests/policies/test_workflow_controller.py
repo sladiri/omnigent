@@ -493,10 +493,18 @@ async def test_reconcile_recovers_existing_child_and_confirms_failure(coding, mo
     await coding.evaluate(_completion(dispatch["title"], child_id=child.id, status="failed"))
     assert (await coding.evaluate(_request("/workflow retry"))).action == PolicyAction.DENY
     coding.store.set_session_live_status(child.id, "failed")
-    await coding.evaluate(output("workflow_reconcile", {}))
+    result = await coding.evaluate(output("workflow_reconcile", {}))
     assert coding.state["pending"] is None
+    assert json.loads(result.data)["status"] == "blocked"
     await coding.evaluate(_request("/workflow retry"))
     assert coding.state["status"] == "snapshot"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_may_load_deferred_tool_schemas(coding):
+    assert (await coding.evaluate(_call("ToolSearch"))).action == PolicyAction.ALLOW
+    await begin(coding)
+    assert (await coding.evaluate(_call("ToolSearch"))).action == PolicyAction.ALLOW
 
 
 @pytest.mark.asyncio
