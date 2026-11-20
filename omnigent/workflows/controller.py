@@ -180,14 +180,27 @@ def _visible_state(state: Json) -> Json:
     }
 
 
+_FENCED_JSON = re.compile(r"```(?:json)?[ \t]*\n(.*?)\n```", re.DOTALL)
+
+
+def _json_object(text: str) -> Json:
+    """Parse a JSON object, or the last fenced one when an output style adds prose."""
+    for candidate in (text, *reversed(_FENCED_JSON.findall(text))):
+        try:
+            value = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
 def _decode(event: PolicyEvent) -> Json:
     data = event.get("data")
     raw = data.get("result") if isinstance(data, dict) else data
-    try:
-        value = json.loads(raw) if isinstance(raw, str) else raw
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
+    if isinstance(raw, str):
+        return _json_object(raw)
+    return raw if isinstance(raw, dict) else {}
 
 
 def _stage(state: Json) -> str:
@@ -1406,10 +1419,11 @@ def _recover_worker_question(
         or (pending.get("child_id") and pending["child_id"] != child.id)
     ):
         return None
-    items = store.list_items(child.id, limit=1, order="desc").data
-    if not items:
+    # Resource events (e.g. a terminal attach) are metadata that can follow the report.
+    items = store.list_items(child.id, limit=20, order="desc").data
+    item = next((i.to_api_dict() for i in items if i.type != "resource_event"), None)
+    if item is None:
         return None
-    item = items[0].to_api_dict()
     if (
         item.get("type") != "message"
         or item.get("role") != "assistant"
@@ -1417,17 +1431,14 @@ def _recover_worker_question(
         or item.get("interrupted")
     ):
         return None
-    try:
-        report = json.loads(
-            "\n".join(
-                block.get("text", "")
-                for block in item.get("content", [])
-                if block.get("type") in {"text", "output_text"}
-            )
+    report = _json_object(
+        "\n".join(
+            block["text"]
+            for block in item.get("content", [])
+            if block.get("type") in {"text", "output_text"} and isinstance(block.get("text"), str)
         )
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(report, dict) or report.get("outcome") != "NEEDS_INPUT":
+    )
+    if report.get("outcome") != "NEEDS_INPUT":
         return None
     if report.get("stage") not in {pending["stage"], pending["stage"].rsplit("/", 1)[-1]}:
         return None
