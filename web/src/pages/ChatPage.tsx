@@ -4133,6 +4133,7 @@ function ComposerImpl(
           beforeActions: (
             <>
               <WorkflowPromptButtons
+                harness={sessionHarness}
                 agentName={
                   subAgentName ?? agents?.find((agent) => agent.id === selectedAgentId)?.name
                 }
