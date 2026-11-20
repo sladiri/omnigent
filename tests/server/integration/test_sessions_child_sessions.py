@@ -1374,6 +1374,40 @@ async def test_native_subagent_yolo_args_derived_from_trusted_spec(
     assert resp.json()["terminal_launch_args"] == expected_args
 
 
+async def test_subagent_harness_override_derives_launch_args_for_override(
+    client: httpx.AsyncClient,
+) -> None:
+    """
+    A sub-agent harness override replaces the spec harness for launch flags.
+
+    A codex-native worker dispatched on claude-native must not inherit
+    Codex's bypass flag; Claude Code exits on that unknown option.
+    """
+    parent = await _create_parent_with_subagents(
+        client,
+        name="orch-harness-override",
+        sub_agents=[
+            {
+                "name": "impl",
+                "harness": "codex-native",
+                "config": {"allowed_harnesses": ["codex-native", "claude-native"]},
+            }
+        ],
+    )
+    resp = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": parent["agent_id"],
+            "parent_session_id": parent["session_id"],
+            "title": "impl:task-override",
+            "sub_agent_name": "impl",
+            "harness_override": "claude-native",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["terminal_launch_args"] is None
+
+
 async def test_native_subagent_yolo_args_reject_overlong_spec_value(
     client: httpx.AsyncClient,
 ) -> None:

@@ -10633,8 +10633,14 @@ async def _create_session_from_existing_agent(
             agent_cache=agent_cache,
         )
         try:
+            # A concrete override decides which CLI receives the flags.
             validated_launch_args = (
-                _derive_terminal_launch_args_from_spec(sub_spec) if sub_spec is not None else None
+                _derive_terminal_launch_args_from_spec(
+                    sub_spec,
+                    harness=harness_override if harness_override != "auto" else None,
+                )
+                if sub_spec is not None
+                else None
             )
         except ValueError as exc:
             raise OmnigentError(
