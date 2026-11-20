@@ -376,3 +376,21 @@ def test_claude_native_permission_mode_translates_without_headless_defaults() ->
         "--permission-mode",
         "bypassPermissions",
     ]
+
+
+def test_harness_override_selects_claude_args_for_codex_spec() -> None:
+    """
+    A runtime harness override decides which native flags a worker gets.
+
+    A workflow worker declared as codex-native can be dispatched on
+    claude-native. Codex's bypass flag must not reach Claude Code, which
+    rejects unknown options and exits before the worker starts.
+    """
+    spec = _spec_with_config({"harness": "codex-native"})
+    assert _derive_terminal_launch_args_from_spec(spec, harness="claude-native") is None
+
+    spec = _spec_with_config({"harness": "codex-native", "permission_mode": "auto"})
+    assert _derive_terminal_launch_args_from_spec(spec, harness="claude-native") == [
+        "--permission-mode",
+        "auto",
+    ]
