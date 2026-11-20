@@ -1495,6 +1495,8 @@ async def test_subagent_harness_override_derives_launch_args_for_override(
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["terminal_launch_args"] is None
+    # The web UI picks the model picker and controls from the wrapper label.
+    assert resp.json()["labels"].get("omnigent.wrapper") == "claude-code-native-ui"
 
 
 async def test_native_subagent_yolo_args_reject_overlong_spec_value(

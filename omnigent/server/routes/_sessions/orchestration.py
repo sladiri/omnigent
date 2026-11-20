@@ -12084,7 +12084,12 @@ async def _create_session_from_existing_agent(
         body.sub_agent_name
         and sub_spec is not None
         and not _force_auto_for_child
-        and (_subagent_labels := _native_subagent_wrapper_labels_from_spec(sub_spec))
+        and (
+            _subagent_labels := _native_subagent_wrapper_labels_from_spec(
+                sub_spec,
+                harness=harness_override if harness_override != "auto" else None,
+            )
+        )
     ):
         initial_labels.update(_subagent_labels)
     elif (

@@ -10635,17 +10635,20 @@ def _derive_terminal_launch_args_from_spec(
     return None
 
 
-def _native_subagent_wrapper_labels_from_spec(sub_spec: AgentSpec) -> dict[str, str]:
+def _native_subagent_wrapper_labels_from_spec(
+    sub_spec: AgentSpec, *, harness: str | None = None
+) -> dict[str, str]:
     """
     Resolve terminal-first wrapper labels from an already-loaded sub-spec.
 
     :param sub_spec: Trusted child sub-agent spec resolved from the
         parent bundle.
+    :param harness: Concrete harness override for this child, e.g.
+        ``"claude-native"``; ``None`` uses the spec harness.
     :returns: ``{wrapper_key: value, ui_key: "terminal"}`` for a native
         sub-agent, or ``{}`` when the sub-agent is not native.
     """
-    harness = _spec_harness(sub_spec)
-    native_agent = native_coding_agent_for_harness(harness)
+    native_agent = native_coding_agent_for_harness(harness or _spec_harness(sub_spec))
     if native_agent is not None:
         return {
             _CLAUDE_NATIVE_WRAPPER_LABEL_KEY: native_agent.wrapper_label,
