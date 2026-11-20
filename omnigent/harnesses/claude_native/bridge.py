@@ -5056,8 +5056,9 @@ def inject_slash_command(
         The person clears it from the embedded terminal and retries.
     :raises RuntimeError: If the tmux target is not advertised in
         time, if the input box never renders (:class:`ClaudePromptTimeout`),
-        if a ``tmux send-keys`` invocation fails, if the typed
-        command verifiably never left the input box (submit swallowed).
+        if a ``tmux send-keys`` invocation fails, if the typed command never
+        showed in the input box (cleared, not submitted), or if it verifiably
+        never left the input box (submit swallowed).
     """
     if not command or not command.startswith("/"):
         raise ValueError(f"slash command must start with '/'; got {command!r}")
@@ -5095,7 +5096,7 @@ def inject_slash_command(
     # Same delivery hazards as inject_user_message: a coalesced or dropped
     # Enter leaves the command drafted while the persisted session value
     # claims it applied. Wait for the command to render, submit, verify it
-    # left the box; an unidentifiable draft falls through to a blind submit.
+    # left the box.
     needle = _submit_needle(command)
     draft_seen = False
     deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
@@ -5106,29 +5107,45 @@ def inject_slash_command(
             draft_seen = True
             break
         time.sleep(_CLAUDE_READY_POLL_INTERVAL_S)
+    if not draft_seen:
+        # The command arrived garbled; Enter would submit what is left as a prompt.
+        # A question that replaced the draft must not get the clear's keys.
+        _raise_if_user_prompt_pending(bridge_dir, _capture_pane(socket_path, tmux_target))
+        _clear_composer(socket_path, tmux_target, bridge_dir=bridge_dir)
+        raise RuntimeError(
+            f"Claude Code's input box did not show the slash command within "
+            f"{_PASTE_COMMIT_TIMEOUT_S}s. The command was not delivered."
+        )
     time.sleep(_PASTE_SETTLE_S)
     if has_pending_user_prompt(bridge_dir):
         raise ClaudeUserPromptPending(
             "Claude is waiting for an explicit answer; settings command not sent."
         )
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
-    if draft_seen:
-        # Retry only while the command remains drafted and no user decision
-        # is pending. A dialog replacing the composer counts as submission.
-        if not _verify_submit_accepted(
+    # Retry only while the command remains drafted and no user decision
+    # is pending. A dialog replacing the composer counts as submission.
+    if not _verify_submit_accepted(
+        socket_path,
+        tmux_target,
+        needle=needle,
+        what="slash command",
+        bridge_dir=bridge_dir,
+    ):
+        raise RuntimeError(
+            f"Claude Code did not accept the slash command within "
+            f"{_SUBMIT_VERIFY_TIMEOUT_S}s (the command is still in the "
+            "input box). The command was not delivered."
+        )
+    if dialog_hint is not None:
+        # /effort usually applies without a dialog; the statusLine then shows the new level.
+        applied_effort = command.split()[-1] if dialog_hint == EFFORT_DIALOG_HINT else None
+        _confirm_tui_dialog(
             socket_path,
             tmux_target,
-            needle=needle,
-            what="slash command",
+            hint=dialog_hint,
             bridge_dir=bridge_dir,
-        ):
-            raise RuntimeError(
-                f"Claude Code did not accept the slash command within "
-                f"{_SUBMIT_VERIFY_TIMEOUT_S}s (the command is still in the "
-                "input box). The command was not delivered."
-            )
-    if dialog_hint is not None:
-        _confirm_tui_dialog(socket_path, tmux_target, hint=dialog_hint, bridge_dir=bridge_dir)
+            applied_effort=applied_effort,
+        )
 
 
 def _confirm_tui_dialog(
@@ -5138,6 +5155,7 @@ def _confirm_tui_dialog(
     hint: str,
     timeout_s: float = _CONFIRM_DIALOG_TIMEOUT_S,
     bridge_dir: Path | None = None,
+    applied_effort: str | None = None,
 ) -> bool:
     """
     Accept the TUI confirmation dialog titled *hint*.
@@ -5168,8 +5186,10 @@ def _confirm_tui_dialog(
         :data:`SWITCH_MODEL_DIALOG_HINT`.
     :param timeout_s: Seconds to watch for the dialog, e.g. ``4.0``.
     :param bridge_dir: Bridge whose live permission hooks protect confirmation.
-    :returns: ``True`` when the dialog was seen and confirmed, ``False`` when
-        the watch timed out.
+    :param applied_effort: Effort level, e.g. ``"high"``, whose appearance in
+        the bridge's statusLine snapshot ends the watch without an Enter.
+    :returns: ``True`` when the dialog was seen and confirmed or the effort
+        verifiably applied, ``False`` when the watch timed out.
     """
     deadline = time.monotonic() + timeout_s
     while True:
@@ -5179,6 +5199,8 @@ def _confirm_tui_dialog(
             _confirm_and_verify_dialog_closed(
                 socket_path, tmux_target, hint=hint, bridge_dir=bridge_dir
             )
+            return True
+        if applied_effort and bridge_dir and _status_line_effort(bridge_dir) == applied_effort:
             return True
         if time.monotonic() >= deadline:
             break
@@ -5198,6 +5220,18 @@ def _confirm_tui_dialog(
         )
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
     return False
+
+
+def _status_line_effort(bridge_dir: Path) -> str | None:
+    """
+    Read the effort level from the statusLine shim's raw snapshot.
+
+    :param bridge_dir: Bridge directory shared with the statusLine shim.
+    :returns: The level, e.g. ``"high"``, or ``None`` when not reported.
+    """
+    effort = _read_json_file(bridge_dir / CONTEXT_RAW_FILE).get("effort")
+    level = effort.get("level") if isinstance(effort, dict) else None
+    return level if isinstance(level, str) else None
 
 
 def _permission_mode_from_pane(pane: str) -> str | None:
@@ -6788,7 +6822,9 @@ def _send_composer_clear_keys(socket_path: str, tmux_target: str, *, rows: int) 
     :param rows: Draft rows to delete, e.g. ``3``.
     """
     presses = 2 * rows
-    keys = _COMPOSER_KILL_TO_LINE_END * presses + _COMPOSER_KILL_TO_LINE_START * presses
+    # "i" leaves vim NORMAL mode (an Escape lands there), where the kills do nothing
+    # and typed text runs as commands; elsewhere it types a letter the kills remove.
+    keys = "i" + _COMPOSER_KILL_TO_LINE_END * presses + _COMPOSER_KILL_TO_LINE_START * presses
     _run_tmux(socket_path, "send-keys", "-l", "-t", tmux_target, keys)
 
 

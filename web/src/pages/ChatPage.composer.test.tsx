@@ -8071,6 +8071,18 @@ describe("effort submit buttons", () => {
     expect(screen.getByRole("button", { name: "focus" })).toBeEnabled();
   });
 
+  it("disables the buttons while a turn is running", () => {
+    // Typing /effort into a busy native terminal queued a garbled prompt.
+    const setEffort = vi.fn();
+    useChatStore.setState({ setEffort });
+    renderWithTooltips(<Composer {...composerProps({ isWorking: true, status: "streaming" })} />);
+    fireEvent.change(textarea(), { target: { value: "queued follow-up" } });
+    const button = screen.getByRole("button", { name: "Send with low effort" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(setEffort).not.toHaveBeenCalled();
+  });
+
   it("only offers supported quick levels", () => {
     const view = renderWithTooltips(
       <Composer {...composerProps({ effortLevels: ["high", "xhigh"] })} />,
