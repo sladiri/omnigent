@@ -1247,10 +1247,11 @@ async def test_malformed_stage_preserves_worker_question_without_advancing(codin
 @pytest.mark.parametrize("source", ["workflow_reconcile", "workflow_status"])
 @pytest.mark.parametrize("workflow", ["implement-review-fix", "review-fix"])
 @pytest.mark.parametrize("wrapper", ["codex-native-ui", "claude-code-native-ui"])
+@pytest.mark.parametrize("fenced", [False, True])
 async def test_recover_native_question_and_bind_answer_across_restart(
-    coding, monkeypatch, source, workflow, wrapper
+    coding, monkeypatch, source, workflow, wrapper, fenced
 ):
-    from omnigent.entities import MessageData, NewConversationItem
+    from omnigent.entities import MessageData, NewConversationItem, ResourceEventData
     from omnigent.workflows.controller import draft_preview
 
     monkeypatch.setattr("omnigent.runtime.get_conversation_store", lambda: coding.store)
@@ -1270,20 +1271,36 @@ async def test_recover_native_question_and_bind_answer_across_restart(
         "evidence": "Inspected Registry integration",
         "question": "May I use Registry directly?",
     }
-    coding.store.append(
-        child.id,
-        [
+    text = json.dumps(report)
+    if fenced:
+        # An output style can wrap the report in prose and a code fence.
+        fence = f"```json\n{json.dumps(report, indent=2)}\n```"
+        text = f"Research done.\n\n`★ Insight`\n- note\n\n{fence}"
+    items = [
+        NewConversationItem(
+            type="message",
+            response_id="native-turn",
+            data=MessageData(
+                role="assistant",
+                agent="worker",
+                content=[{"type": "output_text", "text": text}],
+            ),
+        )
+    ]
+    if fenced:
+        # Opening the worker page later attaches a terminal after the report.
+        items.append(
             NewConversationItem(
-                type="message",
-                response_id="native-turn",
-                data=MessageData(
-                    role="assistant",
-                    agent="worker",
-                    content=[{"type": "output_text", "text": json.dumps(report)}],
+                type="resource_event",
+                response_id="resource-attach",
+                data=ResourceEventData(
+                    event_type="session.resource.created",
+                    resource_id="terminal_claude_main",
+                    resource_type="terminal",
                 ),
             )
-        ],
-    )
+        )
+    coding.store.append(child.id, items)
     coding.store.set_session_live_status(child.id, "running")
     await coding.evaluate(output(source, {}))
     assert coding.state["status"] == "running"
