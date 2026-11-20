@@ -9,6 +9,7 @@ import itertools
 import json
 import os
 import queue
+import re
 import select
 import shlex
 import shutil
@@ -74,6 +75,7 @@ from omnigent.harnesses.claude_native.bridge import (
     stop_hook_seen_since,
     write_tmux_target,
 )
+from omnigent.harnesses.claude_native.status import CONTEXT_RAW_FILE
 from omnigent.inner.datamodel import (
     CredentialProxyEntry,
     CredentialProxySpec,
@@ -97,8 +99,8 @@ def _trust_tmp_bridge_parent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr("omnigent.harnesses.claude_native.bridge._BRIDGE_ROOT", tmp_path)
 
 
-# The clear sent to a one-row input box: two Ctrl+K, then two Ctrl+U (CSI-u).
-_CLEAR_ONE_ROW_COMPOSER = "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
+# The clear sent to a one-row input box: "i" (vim INSERT), two Ctrl+K, two Ctrl+U (CSI-u).
+_CLEAR_ONE_ROW_COMPOSER = "i" + "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
 
 
 def _composer_pane(draft: str = "") -> str:
@@ -6246,9 +6248,7 @@ def test_inject_slash_command_clears_draft_pastes_literal_then_enter(
     The clear kills any draft the user is mid-typing — otherwise the paste
     concatenates and Enter submits ``<draft>/effort high``. ``-l`` is
     required so tmux pastes ``/`` and spaces literally; Enter submits.
-    Every capture here is an idle composer that never shows the typed
-    command, so this also pins the fail-soft path: a never-identifiable
-    draft still gets the single blind submit.
+    Captures show the typed command until Enter submits it.
     """
     bridge_dir = tmp_path / "bridge"
     write_tmux_target(
@@ -6267,12 +6267,15 @@ def test_inject_slash_command_clears_draft_pastes_literal_then_enter(
         stderr = ""
 
     def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
-        """Record one tmux invocation; return rc=0 and an idle composer."""
+        """Record one tmux invocation; return rc=0 and the composer."""
         del kwargs
         captured.append(cmd)
         result = _FakeCompleted()
         if "capture-pane" in cmd:
-            result.stdout = _composer_pane()
+            typed = [c[-1] for c in captured if c[-1] in ("/effort high", "Enter")]
+            result.stdout = _composer_pane(
+                "/effort high" if typed[-1:] == ["/effort high"] else ""
+            )
         return result
 
     monkeypatch.setattr("subprocess.run", _fake_run)
@@ -6372,10 +6375,7 @@ def test_tmux_injections_are_serialized_per_bridge(
         claude_native_bridge, "_wait_for_claude_prompt_ready", lambda *_a, **_k: None
     )
     monkeypatch.setattr(claude_native_bridge, "_paste_and_submit", lambda *_a, **_k: None)
-    monkeypatch.setattr(claude_native_bridge, "_run_tmux", lambda *_args: None)
-    monkeypatch.setattr(claude_native_bridge, "_capture_pane", lambda *_args: _composer_pane())
-    monkeypatch.setattr(claude_native_bridge, "_PASTE_COMMIT_TIMEOUT_S", 0.0)
-    monkeypatch.setattr(claude_native_bridge, "_PASTE_SETTLE_S", 0.0)
+    _fake_tmux(monkeypatch, [_composer_pane()])
 
     def run_user_message() -> None:
         try:
@@ -11745,23 +11745,34 @@ class _VirtualClock:
 def _fake_tmux(
     monkeypatch: pytest.MonkeyPatch,
     panes: list[str],
+    *,
+    echo_typed: bool = True,
 ) -> list[list[str]]:
     """
     Patch tmux so sends are recorded and captures walk *panes*.
 
     :param monkeypatch: Pytest monkeypatch fixture.
     :param panes: Pane frames to return in order; the last one repeats.
+    :param echo_typed: Show a typed slash command in the composer until the
+        next Enter, as the TUI does, without consuming a frame.
     :returns: The list send-keys invocations are appended to (argv tails).
     """
     sends: list[list[str]] = []
     frames = list(panes)
+    typed = {"text": ""}
 
     def _fake_run_tmux(socket_path: str, *args: str) -> None:
         del socket_path
         sends.append(list(args))
+        if echo_typed and "-l" in args and args[-1].startswith("/"):
+            typed["text"] = args[-1]
+        elif args[-1] == "Enter":
+            typed["text"] = ""
 
     def _fake_capture(socket_path: str, tmux_target: str) -> str:
         del socket_path, tmux_target
+        if typed["text"]:
+            return _composer_pane(typed["text"])
         return frames.pop(0) if len(frames) > 1 else frames[0]
 
     monkeypatch.setattr(claude_native_bridge, "_run_tmux", _fake_run_tmux)
@@ -11816,6 +11827,8 @@ class _EditableComposer:
             "\x1b[107;5u": self._kill_to_line_end,
             "\x1b[117;5u": self._kill_to_line_start,
             "\x1b[97;5u": self._move_to_line_start,
+            # The clear's vim INSERT key; without vim mode it types a letter.
+            "i": lambda: self._insert("i"),
         }
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -12902,29 +12915,109 @@ def test_a_slash_command_stuck_in_the_composer_fails_loud(
         claude_native_bridge.inject_slash_command(bridge_dir, command="/effort high")
 
 
-def test_a_slash_command_draft_that_never_renders_submits_blind(
+def test_a_slash_command_draft_that_never_renders_is_cleared_not_submitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fail-soft: an unidentifiable draft falls back to one unverified Enter.
+    """A typed command missing from the input box arrived garbled.
 
-    Some panes never render the typed command where the check can see it — a
-    custom statusline holding the prompt glyph, or captures that stay torn.
-    Its absence after Enter then proves nothing, so verification would pass
-    trivially, and failing loud would break sessions that are working fine.
-    Exactly one Enter, no retries, no raise: the pre-verification contract,
-    which is the difference between this and the stuck-composer case above.
+    Enter would submit what is left of it as a prompt (``rt high`` from
+    ``/effort high``), so the box is cleared and the injection fails instead.
     """
     bridge_dir = _picker_bridge_dir(tmp_path)
     # The composer never shows the command, so the draft is never identified.
-    sends = _fake_tmux(monkeypatch, [_IDLE_PANE])
+    sends = _fake_tmux(monkeypatch, [_IDLE_PANE], echo_typed=False)
+
+    with pytest.raises(RuntimeError, match="was not delivered"):
+        claude_native_bridge.inject_slash_command(bridge_dir, command="/effort high")
+
+    tails = [args[-1] for args in sends]
+    assert "Enter" not in tails, f"An unseen command must not be submitted; got {tails}."
+    assert tails[tails.index("/effort high") + 1 :] == ["Space", _CLEAR_ONE_ROW_COMPOSER]
+
+
+def test_a_slash_command_typed_into_vim_normal_mode_arrives_whole(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With Claude Code's vim editor mode, an Escape (the web Stop) leaves NORMAL mode.
+
+    Typed there, ``/effort high`` loses ``/effo`` to vim commands (``o`` opens
+    a new line in INSERT mode), and ``rt high`` was submitted as a prompt.
+    """
+    bridge_dir = _picker_bridge_dir(tmp_path)
+    tui: dict[str, Any] = {"insert": False, "draft": "", "submitted": []}
+
+    def _fake_run_tmux(socket_path: str, *args: str) -> None:
+        del socket_path
+        key = args[-1]
+        if key == "Enter":
+            tui["submitted"].append(tui["draft"])
+            tui["draft"] = ""
+        elif key == "Space" and tui["insert"]:
+            tui["draft"] += " "
+        elif "-l" in args:
+            for token in re.split(r"(\x1b\[\d+;5u)", key):
+                if token.startswith("\x1b"):
+                    # Ctrl+K / Ctrl+U edit only in INSERT mode.
+                    tui["draft"] = "" if tui["insert"] else tui["draft"]
+                    continue
+                for ch in token:
+                    if tui["insert"]:
+                        tui["draft"] += ch
+                    elif ch in "io":
+                        tui["insert"] = True
+                        tui["draft"] += "\n" if ch == "o" else ""
+
+    monkeypatch.setattr(claude_native_bridge, "_run_tmux", _fake_run_tmux)
+    monkeypatch.setattr(
+        claude_native_bridge, "_capture_pane", lambda _s, _t: _composer_pane(tui["draft"])
+    )
+    monkeypatch.setattr(claude_native_bridge, "time", _VirtualClock())
 
     claude_native_bridge.inject_slash_command(bridge_dir, command="/effort high")
 
-    tails = [args[-1] for args in sends]
-    assert tails == ["Space", _CLEAR_ONE_ROW_COMPOSER, "/effort high", "Enter"], (
-        f"An unverifiable draft must submit blind exactly once; got {tails}."
+    assert tui["submitted"] == ["/effort high"]
+
+
+def test_an_effort_switch_the_status_line_confirms_skips_the_dialog_watch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/effort`` usually applies with no dialog, and the statusLine reports it.
+
+    Waiting out the whole dialog watch delayed every effort-button send by
+    seconds, and its fallback Enter then had nothing to confirm.
+    """
+    bridge_dir = _picker_bridge_dir(tmp_path)
+    status_line = bridge_dir / CONTEXT_RAW_FILE
+    status_line.write_text(json.dumps({"effort": {"level": "medium"}}), encoding="utf-8")
+    clock = _VirtualClock()
+    tui = {"pane": _IDLE_PANE}
+    tails: list[str] = []
+
+    def _fake_run_tmux(socket_path: str, *args: str) -> None:
+        del socket_path
+        tails.append(args[-1])
+        if args[-1] == "/effort high":
+            tui["pane"] = _composer_pane("/effort high")
+        elif args[-1] == "Enter":
+            tui["pane"] = _IDLE_PANE
+            status_line.write_text(json.dumps({"effort": {"level": "high"}}), encoding="utf-8")
+
+    monkeypatch.setattr(claude_native_bridge, "_run_tmux", _fake_run_tmux)
+    monkeypatch.setattr(claude_native_bridge, "_capture_pane", lambda _s, _t: tui["pane"])
+    monkeypatch.setattr(claude_native_bridge, "time", clock)
+
+    claude_native_bridge.inject_slash_command(
+        bridge_dir,
+        command="/effort high",
+        auto_confirm=True,
+        confirm_hint=claude_native_bridge.EFFORT_DIALOG_HINT,
     )
+
+    assert tails.count("Enter") == 1, f"Only the submit Enter may be sent; got {tails}."
+    assert clock.now < claude_native_bridge._CONFIRM_DIALOG_TIMEOUT_S
 
 
 def test_an_effort_switch_with_a_swallowed_confirm_leaves_the_pane_usable(
@@ -13142,7 +13235,8 @@ def test_inject_user_message_refuses_a_shell_mode_draft_it_cannot_clear(
 
     tails = [args[-1] for args in sends]
     assert tails and all(
-        not tail.replace("\x1b[107;5u", "").replace("\x1b[117;5u", "") for tail in tails
+        not tail.removeprefix("i").replace("\x1b[107;5u", "").replace("\x1b[117;5u", "")
+        for tail in tails
     ), f"Only the clearing keys may be sent; got {tails}."
 
 

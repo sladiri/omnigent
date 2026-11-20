@@ -4504,6 +4504,8 @@ function ComposerImpl(
                     levels={effortLevels}
                     disabled={
                       !hasDraft ||
+                      // A native terminal mid-turn garbles the typed /effort.
+                      isWorking ||
                       disabled ||
                       isReadOnly ||
                       unreachable ||

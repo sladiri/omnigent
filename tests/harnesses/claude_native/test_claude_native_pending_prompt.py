@@ -10,7 +10,7 @@ import pytest
 from omnigent.harnesses.claude_native import bridge
 
 # The clear sent to a one-row input box: two Ctrl+K, then two Ctrl+U (CSI-u).
-_CLEAR_ONE_ROW_COMPOSER = "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
+_CLEAR_ONE_ROW_COMPOSER = "i" + "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
 
 _QUESTION = """\
 ────────────────────────────────────────────────────────────────────────────────

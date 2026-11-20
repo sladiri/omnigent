@@ -2786,8 +2786,11 @@ async def test_events_model_change_sends_no_key_past_its_budget(
     assert resp.status_code == 503, resp.text
     assert resp.json()["error"] == "claude_native_model_failed"
     keys = [key for _, key in tui.sent]
-    clear_composer = "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
-    assert keys[:4] == ["Space", clear_composer, "/model claude-opus-4-7", "Enter"], keys
+    clear_composer = "i" + "\x1b[107;5u" * 2 + "\x1b[117;5u" * 2
+    # A command that never shows in the input box is cleared, not submitted.
+    after_typing = ["Enter"] if draft_after_s is not None else ["Space", clear_composer]
+    expected = ["Space", clear_composer, "/model claude-opus-4-7", *after_typing]
+    assert keys[: len(expected)] == expected, keys
     late = [
         (round(at - started_at, 2), key) for at, key in tui.sent if at >= started_at + budget_s
     ]
