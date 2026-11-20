@@ -8434,7 +8434,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
           "true",
         );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task`,
+          `Prepare the start message for \`${workflow === "review" ? "review-fix" : `${workflow}-review-fix`}\` using the task below.\n\nUse workflow_draft provider="${harness === "claude-native" ? "claude" : "codex"}".\n\nMy task`,
         );
         expect(screen.getByTestId("new-chat-landing-input")).toHaveFocus();
       }
@@ -8444,7 +8444,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       expect(screen.queryByRole("button", { name: "compare" })).toBeNull();
       expect(screen.queryByRole("button", { name: "review" })).toBeNull();
       expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-        'Prepare the start message for `review-fix` using the task below.\n\nUse workflow_draft provider="codex".\n\nMy task',
+        `Prepare the start message for \`review-fix\` using the task below.\n\nUse workflow_draft provider="${harness === "claude-native" ? "claude" : "codex"}".\n\nMy task`,
       );
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
@@ -8475,6 +8475,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
   ])(
     "creates a workflow coordinator on $harness with model $model and its original agent ID",
     async ({ harness, model, expectedModel }) => {
+      const provider = harness === "claude-native" ? "claude" : "codex";
       mockClaudeModels(
         CLAUDE_MODEL_OPTIONS_RESULT.data.map((option) => ({
           ...option,
@@ -8506,14 +8507,11 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       openPicker();
       fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
       fireEvent.click(screen.getByTestId("new-chat-landing-agent-ag_workflow"));
-      fireEvent.change(screen.getByRole("combobox", { name: "Coordinator" }), {
-        target: { value: harness },
+      expect(screen.queryByRole("combobox", { name: "Worker provider" })).toBeNull();
+      fireEvent.change(screen.getByRole("combobox", { name: "Provider" }), {
+        target: { value: provider },
       });
-      expect(screen.getByRole("combobox", { name: "Worker provider" })).toHaveValue("codex");
-      fireEvent.change(screen.getByRole("combobox", { name: "Worker provider" }), {
-        target: { value: "claude" },
-      });
-      expect(screen.getByRole("combobox", { name: "Coordinator" })).toHaveValue(harness);
+      expect(screen.getByRole("combobox", { name: "Provider" })).toHaveValue(provider);
       if (model !== null) {
         openPicker();
         fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
@@ -8526,7 +8524,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "implement" }));
       expect(screen.getByTestId("new-chat-landing-input")).toHaveValue(
-        'Prepare the start message for `implement-review-fix` using the task below.\n\nUse workflow_draft provider="claude".\n\nMy task',
+        `Prepare the start message for \`implement-review-fix\` using the task below.\n\nUse workflow_draft provider="${provider}".\n\nMy task`,
       );
       fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
       const { body } = await readCreateBody();

@@ -6176,7 +6176,11 @@ describe("workflow prompt visibility", () => {
 
   it("shows workflow prompts only for the selected controller and preserves the draft", () => {
     clearSessionDrafts();
-    setComposerState({ conversationId: "workflow-prompt", subAgentName: null });
+    setComposerState({
+      conversationId: "workflow-prompt",
+      subAgentName: null,
+      sessionHarness: "codex-native",
+    });
     const props = composerProps({
       agents: [
         { id: "controller", name: "workflow-controller" },
@@ -6222,6 +6226,12 @@ describe("workflow prompt visibility", () => {
       );
       expect(textarea()).toHaveFocus();
     }
+    expect(screen.queryByRole("combobox", { name: "Provider" })).toBeNull();
+    act(() => setComposerState({ sessionHarness: "claude-native" }));
+    fireEvent.click(screen.getByRole("button", { name: "implement" }));
+    expect(textarea()).toHaveValue(
+      'Prepare the start message for `implement-review-fix` using the task below.\n\nUse workflow_draft provider="claude".\n\nMy task',
+    );
     expect(props.onSend).not.toHaveBeenCalled();
   });
 });

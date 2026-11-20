@@ -6429,13 +6429,8 @@ export function NewChatLandingScreen() {
                 beforeActions: (
                   <WorkflowPromptButtons
                     agentName={selectedAgent?.name}
-                    coordinator={{
-                      harness:
-                        selectedNativeHarness === "claude-native"
-                          ? "claude-native"
-                          : "codex-native",
-                      onChange: (harness) => handleSetPickedHarness(harness),
-                    }}
+                    harness={selectedNativeHarness}
+                    onHarnessChange={(harness) => handleSetPickedHarness(harness)}
                     disabled={creating}
                     draft={message}
                     onChange={(text) => {
