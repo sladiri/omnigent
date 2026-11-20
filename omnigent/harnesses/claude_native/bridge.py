@@ -2387,7 +2387,8 @@ def build_mcp_config(bridge_dir: Path, *, python_executable: str | None = None) 
 
 def _pin_runner_tmpdir(command: str) -> str:
     """Run a generated command with the runner's temp root."""
-    return f"env TMPDIR={shlex.quote(str(_TRUSTED_PARENT))} {command}"
+    # Absolute path: a user PATH entry named ``env`` must not swallow the hook.
+    return f"/usr/bin/env TMPDIR={shlex.quote(str(_TRUSTED_PARENT))} {command}"
 
 
 def _python_hook_command(parts: list[str]) -> str:
